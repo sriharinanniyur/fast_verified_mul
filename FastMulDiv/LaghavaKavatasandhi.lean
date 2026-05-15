@@ -1,3 +1,5 @@
+-- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun> and GPT-5
+
 import Mathlib
 open Finset
 set_option maxHeartbeats 400000
