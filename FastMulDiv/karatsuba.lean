@@ -1,3 +1,5 @@
+-- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun>
+
 import Mathlib
 set_option maxHeartbeats 800000
 
