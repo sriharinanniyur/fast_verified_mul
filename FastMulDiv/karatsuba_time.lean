@@ -526,6 +526,4 @@ theorem karatsuba_time_upper :
   · rw [ ktau_base _ _ ( by omega ) ] ; norm_num;
     positivity
 
-
-
 end Cslib.Algorithms.Lean.TimeM.Algorithms.Karatsuba
