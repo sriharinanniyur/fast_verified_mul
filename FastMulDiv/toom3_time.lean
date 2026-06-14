@@ -1,4 +1,5 @@
 -- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun>
+-- and Claude Opus 4.8
 
 import Mathlib
 import Cslib.Algorithms.Lean.TimeM
