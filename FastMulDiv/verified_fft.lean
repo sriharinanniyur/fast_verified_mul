@@ -1,7 +1,4 @@
 -- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun> and Claude Opus 4.7
--- Most lemmas in this file are Aristotle-written. A few are written by Claude.
--- Assume by default that a given lemma is Aristotle. We have tried to label
--- Claude's work wherever it appears.
 
 import Mathlib
 import Cslib.Algorithms.Lean.TimeM
