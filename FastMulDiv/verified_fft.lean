@@ -1,4 +1,7 @@
 -- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun> and Claude Opus 4.7
+-- Most lemmas in this file are Aristotle-written. A few are written by Claude.
+-- Assume by default that a given lemma is Aristotle. We have tried to label
+-- Claude's work wherever it appears.
 
 import Mathlib
 import Cslib.Algorithms.Lean.TimeM
@@ -8,9 +11,9 @@ set_option linter.style.emptyLine false
 
 set_option autoImplicit false
 
-namespace Cslib.Algorithms.Lean.TimeM.FFT
+namespace Cslib.Algorithms.Lean.TimeM
 
-open Finset BigOperators Cslib.Algorithms.Lean.TimeM
+open Finset BigOperators
 /-
 General lemma: a for loop that sets each index independently produces Vector.ofFn
 -/
@@ -185,11 +188,13 @@ def fft
 
     for h : i in [0:K_pred] do
       tick 1
-      have hi : i < K_pred := h.2.1
+      have h_i    : i < K_pred := h.2.1
+      have h_Low  : i < K := by omega
+      have h_High : i + K_pred < K := by omega
       let p : F := X[i]
       let q : F := T[i] * Y[i]
-      result := result.set i (p + q) (by omega)
-      result := result.set (i + K_pred) (p - q) (by omega)
+      result := result.set i (p + q) h_Low
+      result := result.set (i + K_pred) (p - q) h_High
     return result
 
 -- claude
@@ -204,164 +209,181 @@ private lemma ret_foldlM_TimeM {α β : Type*}
     rw [ret_bind]
     exact ih _
 
-/-
-Helper: characterize the butterfly loop
--/
--- aristotle + claude
-private lemma fft_butterfly_loop {F : Type*} [Field F] {k' : ℕ}
-    (x : Vector F (2^(k'+1))) (ω : F) (hω : IsPrimitiveRoot ω (2^(k'+1))) :
-    (fft x ω hω).ret =
-    let X := (fft (Vector.ofFn fun j : Fin (2^k') => x[2 * j.val])
-                  (ω^2) (prim_root_mul_self hω)).ret
-    let Y := (fft (Vector.ofFn fun j : Fin (2^k') => x[2 * j.val + 1])
-                  (ω^2) (prim_root_mul_self hω)).ret
-    let T := (t_table (2^k') ω).ret
-    Vector.ofFn (fun i : Fin (2^(k'+1)) =>
-      if h : i.val < 2^k' then
-        X[i.val]'h + T[i.val]'h * Y[i.val]'h
-      else
-        have hh : i.val - 2^k' < 2^k' := by
-          have := i.2; grind
-        X[i.val - 2^k']'hh - T[i.val - 2^k']'hh * Y[i.val - 2^k']'hh) := by
-  simp +decide [fft, ret_bind, ret_pure, ret_foldlM_TimeM]
-  set X : Vector F (2^k') :=
-    (fft (Vector.ofFn fun j : Fin (2^k') => x[2 * j.val]) (ω^2)
-      (prim_root_mul_self hω)).ret with hX
-  set Y : Vector F (2^k') :=
-    (fft (Vector.ofFn fun j : Fin (2^k') => x[2 * j.val + 1]) (ω^2)
-      (prim_root_mul_self hω)).ret with hY
-  set T : Vector F (2^k') := (t_table (2^k') ω).ret with hT
-  ext i hi
-  simp [Vector.getElem_ofFn]
-  by_cases hi' : i < 2 ^ k'
-  · rw [dif_pos hi']
-    have h_foldl : ∀ l : List {x // x ∈ List.range' 0 (2^k')},
-        i ∈ List.map Subtype.val l →
-        (List.foldl (fun (b : Vector F (2^(k'+1))) (x_1 : {x // x ∈ List.range' 0 (2^k')}) =>
-          have hx1 : x_1.val < 2^k' := by
-            have := x_1.2; simp [List.mem_range'] at this; omega
-          (b.set x_1.val
-              (X[x_1.val] + T[x_1.val] * Y[x_1.val])
-              (by omega)).set
-            (x_1.val + 2^k')
-            (X[x_1.val] - T[x_1.val] * Y[x_1.val])
-            (by omega))
-          (Vector.replicate (2^(k'+1)) 0) l)[i] = X[i] + T[i] * Y[i] := by
-      intro l hl
-      induction l using List.reverseRecOn with
-      | nil => simp at hl
-      | append_singleton xs y ih =>
-        simp_all [List.foldl_append, Vector.getElem_set]
-        split_ifs <;> grind
-    apply h_foldl; simp [List.mem_range']; omega
-  · rw [dif_neg hi']
-    obtain ⟨j, rfl⟩ : ∃ j, i = j + 2^k' := ⟨i - 2^k', by omega⟩
-    have hj : j < 2^k' := by have := hi; rw [pow_succ] at this; omega
-    have h_foldl : ∀ l : List {x // x ∈ List.range' 0 (2^k')},
-        j ∈ List.map Subtype.val l →
-        (List.foldl (fun (b : Vector F (2^(k'+1))) (x_1 : {x // x ∈ List.range' 0 (2^k')}) =>
-          have hx1 : x_1.val < 2^k' := by
-            have := x_1.2; simp [List.mem_range'] at this; omega
-          (b.set x_1.val
-              (X[x_1.val] + T[x_1.val] * Y[x_1.val])
-              (by omega)).set
-            (x_1.val + 2^k')
-            (X[x_1.val] - T[x_1.val] * Y[x_1.val])
-            (by omega))
-          (Vector.replicate (2^(k'+1)) 0) l)[j + 2^k'] = X[j] - T[j] * Y[j] := by
-      intro l hl
-      induction l using List.reverseRecOn with
-      | nil => simp at hl
-      | append_singleton xs y ih =>
-        have hy : y.val < 2^k' := by
-          have := y.2; simp [List.mem_range'] at this; omega
-        simp_all [List.foldl_append, Vector.getElem_set]
-        split_ifs <;> grind
-    convert h_foldl _ ?_ using 2
-    all_goals first | omega | (simp [List.mem_range'])
-    grind
-/-
-Base case
--/
-private lemma fft_eq_dft_base {F : Type*} [Field F]
-    (x : Vector F (2^0)) (ω : F) (hω : IsPrimitiveRoot ω (2^0)) :
-    (fft x ω hω).ret = dft x ω hω := by
-  -- Since $k = 0$, the FFT and DFT are both the identity function, so they are equal.
-  simp [fft, dft];
-  grind
-/-
-Inductive step: low half
--/
-private lemma fft_eq_dft_low {F : Type*} [Field F] {k' : ℕ}
-    (x : Vector F (2^(k'+1))) (ω : F) (hω : IsPrimitiveRoot ω (2^(k'+1)))
-    (i : Fin (2^k'))
-    (E_dft : Vector F (2^k'))
-    (O_dft : Vector F (2^k'))
-    (hE : ∀ j : Fin (2^k'), E_dft[j] = ∑ m : Fin (2^k'), x[2 * m.val] * (ω^2) ^ (m.val * j.val))
-    (hO : ∀ j : Fin (2^k'), O_dft[j] = ∑ m : Fin (2^k'), x[2 * m.val + 1] * (ω^2) ^ (m.val * j.val)) :
-    E_dft[i.val] + ω ^ i.val * O_dft[i.val] =
-    ∑ j : Fin (2^(k'+1)), x[j] * ω ^ (j.val * i.val) := by
-  convert ( dft_split_sum x ω i ) |> Eq.symm using 1;
-  aesop
-/-
-Inductive step: high half
--/
-private lemma fft_eq_dft_high {F : Type*} [Field F] {k' : ℕ}
-    (x : Vector F (2^(k'+1))) (ω : F) (hω : IsPrimitiveRoot ω (2^(k'+1)))
-    (i : Fin (2^(k'+1))) (hi : ¬ i.val < 2^k')
-    (E_dft : Vector F (2^k'))
-    (O_dft : Vector F (2^k'))
-    (hE : ∀ j : Fin (2^k'), E_dft[j] = ∑ m : Fin (2^k'), x[2 * m.val] * (ω^2) ^ (m.val * j.val))
-    (hO : ∀ j : Fin (2^k'), O_dft[j] = ∑ m : Fin (2^k'), x[2 * m.val + 1] * (ω^2) ^ (m.val * j.val)) :
-    E_dft[i.val - 2^k'] - ω ^ (i.val - 2^k') * O_dft[i.val - 2^k'] =
-    ∑ j : Fin (2^(k'+1)), x[j] * ω ^ (j.val * i.val) := by
-  rw [ eq_comm ];
-  convert dft_split_sum_high x ω hω i hi using 1;
-  rw [ Nat.mod_eq_sub_mod ];
-  · rw [ Nat.mod_eq_of_lt ];
-    · convert congr_arg₂ _ ( hE ⟨ i - 2 ^ k', _ ⟩ ) ( congr_arg _ ( hO ⟨ i - 2 ^ k', _ ⟩ ) ) using 1;
-      · bv_omega;
-      · rw [ tsub_lt_iff_left ] <;> linarith [ Fin.is_lt i, pow_succ' 2 k' ];
-    · rw [ tsub_lt_iff_left ] <;> linarith [ Fin.is_lt i, pow_succ' 2 k' ];
-  · exact le_of_not_gt hi
-/-
-FFT CORRECTNESS THEOREM
--/
-theorem fft_eq_dft
-    {F : Type*} [Field F]
+-- Pure functional version of the combination step
+private def fft_pure
+    {F : Type} [Field F]
     {k : ℕ}
     (x : Vector F (2^k))
-    (ω : F)
-    (hω : IsPrimitiveRoot ω (2^k))
-    : (fft x ω hω).ret = dft x ω hω := by
-  revert x ω hω;
-  induction' k with k ih;
-  · exact?;
-  · intro x ω hω
-    rw [ fft_butterfly_loop ];
-    refine' Vector.ext fun i => _;
-    intro hi;
-    by_cases hi' : i < 2 ^ k <;> simp_all +decide [ Vector.getElem_ofFn ];
-    · convert fft_eq_dft_low x ω hω ⟨ i, hi' ⟩ _ _ _ _ using 1;
-      congr! 1;
-      congr! 1;
-      · exact t_table_get _ _ ⟨ i, hi' ⟩;
-      · unfold dft; aesop;
-      · unfold dft; aesop;
-      · simp +decide [ dft ];
-    · split_ifs <;> simp_all +decide [ dft ];
-      · linarith;
-      · convert fft_eq_dft_high x ω hω ⟨ i, hi ⟩ ( by aesop ) ( Vector.ofFn fun j : Fin ( 2 ^ k ) => ∑ m : Fin ( 2 ^ k ), x[2 * m.val] * ( ω ^ 2 ) ^ ( m.val * j.val ) ) ( Vector.ofFn fun j : Fin ( 2 ^ k ) => ∑ m : Fin ( 2 ^ k ), x[2 * m.val + 1] * ( ω ^ 2 ) ^ ( m.val * j.val ) ) _ _ using 1 <;> simp +decide [ t_table_get ];
-        exact Or.inl ( t_table_get _ _ ⟨ i - 2 ^ k, by rw [ pow_succ' ] at hi; omega ⟩ )
-
-
-
+    (OMEGA : F)
+    (h_OMEGA : IsPrimitiveRoot OMEGA (2^k))
+    : Vector F (2^k) :=
+  match k with
+  | 0      => x
+  | k_pred + 1 =>
+    let K_pred : ℕ := 2 ^ k_pred
+    let E : Vector F K_pred := Vector.ofFn fun j : Fin K_pred => x[2 * j.val]
+    let O : Vector F K_pred := Vector.ofFn fun j : Fin K_pred => x[2 * j.val + 1]
+    let h_OMEGA' : IsPrimitiveRoot (OMEGA^2) K_pred := prim_root_mul_self h_OMEGA
+    let E' := fft_pure E (OMEGA^2) h_OMEGA'
+    let O' := fft_pure O (OMEGA^2) h_OMEGA'
+    Id.run do
+      let mut result : Vector F (2 ^ (k_pred + 1)) := Vector.replicate _ 0
+      for h : i in [0:K_pred] do
+        have hi : i < K_pred := h.2.1
+        have hLow  : i < 2 ^ (k_pred + 1) := by omega
+        have hHigh : i + K_pred < 2 ^ (k_pred + 1) := by omega
+        let p : F := E'[i]
+        let q : F := OMEGA ^ i * O'[i]
+        result := result.set i           (p + q) hLow
+        result := result.set (i + K_pred) (p - q) hHigh
+      return result
 /-- The vector returned by `t_table n OMEGA` has `i`-th entry `OMEGA^i`. -/
-private lemma t_table_ret_eq {F : Type*} [Field F] (n : ℕ) (OMEGA : F) :
+private lemma t_table_ret_eq {F : Type} [Field F] (n : ℕ) (OMEGA : F) :
     (t_table n OMEGA).ret = Vector.ofFn (fun j : Fin n => OMEGA ^ j.val) := by
   refine Vector.ext fun i hi => ?_
   simp
   exact t_table_get n OMEGA ⟨i, hi⟩
+
+/-
+The butterfly combination loop produces a specific vector.
+-/
+private lemma butterfly_loop_eq_ofFn {F : Type} [Field F] {K_pred : ℕ}
+    (E' O' : Vector F K_pred) (OMEGA : F) :
+    (Id.run do
+      let mut result : Vector F (2 ^ 1 * K_pred) := Vector.replicate _ 0
+      for h : i in [0:K_pred] do
+        have hi : i < K_pred := h.2.1
+        have hLow  : i < 2 * K_pred := by omega
+        have hHigh : i + K_pred < 2 * K_pred := by omega
+        let p : F := E'[i]
+        let q : F := OMEGA ^ i * O'[i]
+        result := result.set i           (p + q) hLow
+        result := result.set (i + K_pred) (p - q) hHigh
+      return result) =
+    Vector.ofFn (fun j : Fin (2 * K_pred) =>
+      if h : j.val < K_pred then
+        E'[j.val] + OMEGA ^ j.val * O'[j.val]
+      else
+        E'[j.val - K_pred] - OMEGA ^ (j.val - K_pred) * O'[j.val - K_pred]) := by
+  refine' Vector.ext fun j => _;
+  intro hj;
+  by_cases hj' : j < K_pred;
+  · simp +decide [ vector_set_forIn_range, hj' ];
+    have h_foldl : ∀ (l : List (Fin K_pred)), j ∈ List.map (fun x => x.val) l → (List.foldl (fun (b : Vector F (2 * K_pred)) (x : Fin K_pred) => (b.set x.val (E'[x.val] + OMEGA ^ x.val * O'[x.val]) (by
+    linarith [ Fin.is_lt x ])).set (x.val + K_pred) (E'[x.val] - OMEGA ^ x.val * O'[x.val]) (by
+    linarith [ Fin.is_lt x ])) (Vector.replicate (2 * K_pred) 0) l)[j] = E'[j] + OMEGA ^ j * O'[j] := by
+      all_goals generalize_proofs at *;
+      intro l hl; induction' l using List.reverseRecOn with l ih <;> simp_all +decide [ List.foldl ] ;
+      grind
+    generalize_proofs at *;
+    convert h_foldl _ _;
+    rotate_left;
+    exact List.attach ( List.range' 0 K_pred ) |> List.map fun x => ⟨ x.val, by
+      grind +ring ⟩
+    all_goals generalize_proofs at *;
+    · simp +decide [ List.mem_map, List.mem_range' ];
+      linarith;
+    · induction ( List.range' 0 K_pred ).attach using List.reverseRecOn <;> aesop;
+  · -- Since $j \geq K_pred$, we can write $j = K_pred + m$ for some $m$.
+    obtain ⟨m, rfl⟩ : ∃ m, j = K_pred + m := by
+      exact Nat.exists_eq_add_of_le ( le_of_not_gt hj' );
+    simp +decide [ Vector.getElem_set, List.foldl ];
+    have h_foldl : ∀ (l : List (Fin K_pred)), (∀ x ∈ l, x.val < K_pred) → (List.foldl (fun (b : Vector F (2 * K_pred)) (x : Fin K_pred) => (b.set x.val (E'[x.val] + OMEGA ^ x.val * O'[x.val]) (by
+    linarith [ Fin.is_lt x ])).set (x.val + K_pred) (E'[x.val] - OMEGA ^ x.val * O'[x.val]) (by
+    linarith [ Fin.is_lt x ])) (Vector.replicate (2 * K_pred) 0) l)[K_pred + m] = if m ∈ List.map (fun x => x.val) l then E'[m] - OMEGA ^ m * O'[m] else 0 := by
+      intro l hl; induction' l using List.reverseRecOn with l ih <;> simp_all +decide [ List.foldl ] ;
+      grind;
+    convert h_foldl _ _ using 1;
+    rotate_left;
+    rotate_left;
+    exact List.attach ( List.range' 0 K_pred ) |> List.map fun x => ⟨ x.val, by
+      grind ⟩
+    all_goals generalize_proofs at *;
+    · simp +decide [ List.mem_map, List.mem_range' ];
+    · congr! 2;
+      induction' ( List.range' 0 K_pred ).attach using List.reverseRecOn with x xs ih <;> simp +decide [ * ];
+    · simp +decide [ List.mem_map, List.mem_range' ];
+      exact fun h => False.elim <| by linarith;
+
+/-
+`fft.ret = fft_pure`
+-/
+private lemma fft_ret_eq_fft_pure
+    {F : Type} [Field F]
+    {k : ℕ}
+    (x : Vector F (2^k))
+    (OMEGA : F)
+    (h_OMEGA : IsPrimitiveRoot OMEGA (2^k))
+    : (fft x OMEGA h_OMEGA).ret = fft_pure x OMEGA h_OMEGA := by
+  induction' k with k ih generalizing OMEGA;
+  · rfl;
+  · unfold fft fft_pure;
+    simp +decide [ ← ih, t_table_ret_eq ];
+    convert ret_foldlM_TimeM _ _ _ using 1
+
+/-
+`fft_pure = dft`
+-/
+private lemma fft_pure_eq_dft
+    {F : Type} [Field F]
+    {k : ℕ}
+    (x : Vector F (2^k))
+    (OMEGA : F)
+    (h_OMEGA : IsPrimitiveRoot OMEGA (2^k))
+    : fft_pure x OMEGA h_OMEGA = dft x OMEGA h_OMEGA := by
+  revert x OMEGA h_OMEGA;
+  induction' k with k ih;
+  · -- In the base case where $k = 0$, the vector $x$ has length $1$, so the FFT and DFT are both equal to $x$.
+    intro x OMEGA h_OMEGA
+    simp [fft_pure, dft];
+    grind;
+  · intro x OMEGA h_OMEGA
+    simp [fft_pure, dft];
+    convert butterfly_loop_eq_ofFn _ _ _ using 1;
+    rotate_left;
+    exact F;
+    exact inferInstance;
+    exact 2 ^ k;
+    exact Vector.ofFn fun j => ∑ i : Fin ( 2 ^ k ), x[2 * i.val] * ( OMEGA ^ 2 ) ^ ( i.val * j.val );
+    exact Vector.ofFn fun j => ∑ i : Fin ( 2 ^ k ), x[2 * i.val + 1] * ( OMEGA ^ 2 ) ^ ( i.val * j.val );
+    exact OMEGA;
+    simp +decide [ ← pow_succ', ih ];
+    congr! 2;
+    · ring;
+    · congr! 3;
+      · ring;
+      · congr! 2;
+        · unfold dft; aesop;
+        · unfold dft; aesop;
+      · aesop;
+      · unfold dft; aesop;
+    · rw [ pow_succ' ];
+    · ring;
+    · congr! 1;
+      · rw [ pow_succ' ];
+      · rename_i i j hij;
+        split_ifs;
+        · convert dft_split_sum x OMEGA ⟨ j, by linarith ⟩ using 1;
+          congr! 2;
+          grind;
+        · convert dft_split_sum_high x OMEGA h_OMEGA i _ using 1;
+          · rw [ show ( i : ℕ ) % 2 ^ k = ( j : ℕ ) - 2 ^ k from ?_ ];
+            rw [ Nat.mod_eq_sub_mod ];
+            · rw [ Nat.mod_eq_of_lt ];
+              · grind;
+              · grind;
+            · grind;
+          · grind
+
+-- FFT CORRECTNESS THEOREM
+theorem fft_eq_dft
+    {F : Type} [Field F]
+    {k : ℕ}
+    (x : Vector F (2^k))
+    (OMEGA : F)
+    (h_OMEGA : IsPrimitiveRoot OMEGA (2^k))
+    : (fft x OMEGA h_OMEGA).ret = dft x OMEGA h_OMEGA := by
+  rw [fft_ret_eq_fft_pure, fft_pure_eq_dft]
 
 
 private def convert_vector_to_zmod
@@ -481,19 +503,19 @@ open Nat (clog)
 theorem fft_big_Theta {F : Type*} [Field F] {k : ℕ}
     (x : Vector F (2 ^ k)) (OMEGA : F) (h_OMEGA : IsPrimitiveRoot OMEGA (2 ^ k)) :
     let K := 2 ^ k
-    ∃ (c1 c2 : ℕ),
-      c1 ≥ 1
-      ∧ c1 * (clog 2 K) * K ≤ (fft x OMEGA h_OMEGA).time
-      ∧ c2 ≥ 1
-      ∧ (fft x OMEGA h_OMEGA).time ≤ c2 * (clog 2 K) * K
-      := by
-  have ht := fft_time_eq x OMEGA h_OMEGA
-  refine ⟨1, 10, by omega, ?_, by omega, ?_⟩
-  all_goals rw [ht, Nat.clog_pow 2 k (by omega)]
-  all_goals rcases k with _ | k
-  · rfl
-  · rw [one_mul]; exact fft_time_lower _ (by omega)
-  · rfl
-  · exact fft_time_upper _ (by omega)
+    (Nat.clog 2 K) * K ≤ (fft x OMEGA h_OMEGA).time ∧
+    (fft x OMEGA h_OMEGA).time ≤ 10 * (Nat.clog 2 K) * K := by
+  intro K
+  rw [fft_time_eq x OMEGA h_OMEGA]
+  show Nat.clog 2 (2 ^ k) * 2 ^ k ≤ fft_time_formula k ∧
+       fft_time_formula k ≤ 10 * Nat.clog 2 (2 ^ k) * 2 ^ k
+  rw [Nat.clog_pow 2 k (by omega)]
+  constructor
+  · rcases k with _ | k
+    · rfl
+    · exact fft_time_lower _ (by omega)
+  · rcases k with _ | k
+    · rfl
+    · exact fft_time_upper _ (by omega)
 
-end Cslib.Algorithms.Lean.TimeM.FFT
+end Cslib.Algorithms.Lean.TimeM
