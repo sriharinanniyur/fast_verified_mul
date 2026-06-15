@@ -560,8 +560,7 @@ lemma ktau_le_gb (a b : ℕ) (h : 2 ≤ Nat.size (max a b)) :
     push_cast
     nlinarith [ hcore, hb1, hb2, hb3, hk ]
 
-/-- Upper bound: T(n) = O(n^{log₂ 3}).
-    Since log₂ 3 ≈ 1.585 is irrational, the exponent requires `Real.logb`. -/
+
 theorem karatsuba_time_bigO :
     ∃ (c : ℝ) (n0 : ℕ), c > 0 ∧ n0 > 0 ∧
     ∀ (x y : ℤ),
