@@ -56,10 +56,11 @@ lemma max_sum_lt_of_size_ge_two (x y : ℕ) (n : ℕ) (hn : n = Nat.size (max x 
 -- Shifts and masks on n-bit operands cost O(n), modeled as `tick n`.
 
 def karatsuba (x_raw y_raw : ℤ) : TimeM ℕ ℤ := do
-  let x := x_raw.natAbs
-  let y := y_raw.natAbs
-  let n := Nat.size (max x y)
+  let x := x_raw.natAbs; tick 1;
+  let y := y_raw.natAbs; tick 1;
+  let n := Nat.size (max x y); tick n;
   if n ≤ 1 then
+    tick 1
     return x_raw * y_raw
   else
     let k := n >>> 1;           tick 1;
@@ -135,12 +136,15 @@ theorem karatsuba_correct (x y : ℤ) : (karatsuba x y).ret = x * y := by
     · aesop;
     · grind
 
+
 /-! ### Time upper bound infrastructure -/
 open Real in
 /-- The exponent `log₂ 3`. -/
 noncomputable def kp : ℝ := Real.logb 2 3
 /-- The bound function `f(m) = 120 m^p - 160 m`. -/
 noncomputable def fb (m : ℕ) : ℝ := 120 * (m : ℝ) ^ kp - 160 * (m : ℝ)
+/-- The bound function for the revised cost model, `g(m) = 2 f(m) = 240 m^p - 320 m`. -/
+noncomputable def gb (m : ℕ) : ℝ := 2 * fb m
 /-- The time cost as a function of the (nonnegative) natural arguments. -/
 def ktau (a b : ℕ) : ℕ := (karatsuba (a : ℤ) (b : ℤ)).time
 lemma two_rpow_kp : (2 : ℝ) ^ kp = 3 := by
@@ -162,13 +166,14 @@ lemma time_eq_ktau (x y : ℤ) : (karatsuba x y).time = ktau x.natAbs y.natAbs :
   norm_cast;
   simp +decide [ Nat.add_div, Nat.mul_div_assoc, Nat.mul_mod, Nat.add_mod ];
   split_ifs <;> norm_cast
-lemma ktau_base (a b : ℕ) (h : Nat.size (max a b) ≤ 1) : ktau a b = 0 := by
+lemma ktau_base (a b : ℕ) (h : Nat.size (max a b) ≤ 1) : ktau a b = 3 + Nat.size (max a b) := by
   unfold ktau;
   unfold karatsuba;
-  aesop
+  simp +decide [h];
+  omega
 lemma ktau_rec (a b : ℕ) (h : ¬ Nat.size (max a b) ≤ 1) :
     ktau a b =
-      (1 + 2 * (Nat.size (max a b) / 2) + 6 * Nat.size (max a b))
+      (3 + 2 * (Nat.size (max a b) / 2) + 7 * Nat.size (max a b))
       + ktau (a % 2 ^ (Nat.size (max a b) / 2)) (b % 2 ^ (Nat.size (max a b) / 2))
       + ktau (a / 2 ^ (Nat.size (max a b) / 2)) (b / 2 ^ (Nat.size (max a b) / 2))
       + ktau (a / 2 ^ (Nat.size (max a b) / 2) + a % 2 ^ (Nat.size (max a b) / 2))
@@ -183,9 +188,9 @@ bounds can be discharged by `decide` (without `native_decide`). -/
 def ktF : ℕ → ℕ → ℕ → ℕ
   | 0, _, _ => 0
   | (f + 1), a, b =>
-    if Nat.size (max a b) ≤ 1 then 0
+    if Nat.size (max a b) ≤ 1 then 3 + Nat.size (max a b)
     else
-      (1 + 2 * (Nat.size (max a b) / 2) + 6 * Nat.size (max a b))
+      (3 + 2 * (Nat.size (max a b) / 2) + 7 * Nat.size (max a b))
       + ktF f (a % 2 ^ (Nat.size (max a b) / 2)) (b % 2 ^ (Nat.size (max a b) / 2))
       + ktF f (a / 2 ^ (Nat.size (max a b) / 2)) (b / 2 ^ (Nat.size (max a b) / 2))
       + ktF f (a / 2 ^ (Nat.size (max a b) / 2) + a % 2 ^ (Nat.size (max a b) / 2))
@@ -272,6 +277,10 @@ lemma fb_three_ge : (102 : ℝ) ≤ fb 3 := by
   have h_exp : (3 : ℝ) ^ kp ≥ (3 : ℝ) ^ (3 / 2 : ℝ) := by
     exact Real.rpow_le_rpow_of_exponent_le ( by norm_num ) ( show kp ≥ 3 / 2 by exact kp_ge );
   rw [ show ( 3 : ℝ ) ^ ( 3 / 2 : ℝ ) = 3 * Real.sqrt 3 by rw [ Real.sqrt_eq_rpow, ← Real.rpow_one_add' ] <;> norm_num ] at h_exp ; norm_num at * ; nlinarith [ Real.sqrt_nonneg 3, Real.sq_sqrt ( show 0 ≤ 3 by norm_num ) ]
+lemma gb_nonneg (m : ℕ) (h : 2 ≤ m) : 0 ≤ gb m := by
+  unfold gb; have := fb_nonneg m h; linarith
+lemma gb_mono (m₁ m₂ : ℕ) (h1 : 2 ≤ m₁) (h : m₁ ≤ m₂) : gb m₁ ≤ gb m₂ := by
+  unfold gb; have := fb_mono m₁ m₂ h1 h; linarith
 lemma ktau_size_bound_aux (a b : ℕ) (n B : ℕ) (h : Nat.size (max a b) = n)
     (hB : 2 ^ n = B) : a < B ∧ b < B := by
   have hm : max a b < B := by
@@ -279,26 +288,26 @@ lemma ktau_size_bound_aux (a b : ℕ) (n B : ℕ) (h : Nat.size (max a b) = n)
   exact ⟨lt_of_le_of_lt (le_max_left a b) hm, lt_of_le_of_lt (le_max_right a b) hm⟩
 -- Finite base-case bounds (sizes 2–5), discharged by `decide` on the kernel-reducible
 -- fuel function `ktF` (no `native_decide`).
-lemma ktau_size2 (a b : ℕ) (h : Nat.size (max a b) = 2) : ktau a b ≤ 30 := by
+lemma ktau_size2 (a b : ℕ) (h : Nat.size (max a b) = 2) : ktau a b ≤ 58 := by
   obtain ⟨ha, hb⟩ := ktau_size_bound_aux a b 2 4 h (by norm_num)
   rw [ktau_eq_ktF 4 a b (by omega)]
   exact (by decide :
-    ∀ a' < 4, ∀ b' < 4, Nat.size (max a' b') = 2 → ktF 4 a' b' ≤ 30) a ha b hb h
-lemma ktau_size3 (a b : ℕ) (h : Nat.size (max a b) = 3) : ktau a b ≤ 102 := by
+    ∀ a' < 4, ∀ b' < 4, Nat.size (max a' b') = 2 → ktF 4 a' b' ≤ 58) a ha b hb h
+lemma ktau_size3 (a b : ℕ) (h : Nat.size (max a b) = 3) : ktau a b ≤ 179 := by
   obtain ⟨ha, hb⟩ := ktau_size_bound_aux a b 3 8 h (by norm_num)
   rw [ktau_eq_ktF 8 a b (by omega)]
   exact (by decide :
-    ∀ a' < 8, ∀ b' < 8, Nat.size (max a' b') = 3 → ktF 8 a' b' ≤ 102) a ha b hb h
-lemma ktau_size4 (a b : ℕ) (h : Nat.size (max a b) = 4) : ktau a b ≤ 170 := by
+    ∀ a' < 8, ∀ b' < 8, Nat.size (max a' b') = 3 → ktF 8 a' b' ≤ 179) a ha b hb h
+lemma ktau_size4 (a b : ℕ) (h : Nat.size (max a b) = 4) : ktau a b ≤ 297 := by
   obtain ⟨ha, hb⟩ := ktau_size_bound_aux a b 4 16 h (by norm_num)
   rw [ktau_eq_ktF 16 a b (by omega)]
   exact (by decide :
-    ∀ a' < 16, ∀ b' < 16, Nat.size (max a' b') = 4 → ktF 16 a' b' ≤ 170) a ha b hb h
-lemma ktau_size5 (a b : ℕ) (h : Nat.size (max a b) = 5) : ktau a b ≤ 292 := by
+    ∀ a' < 16, ∀ b' < 16, Nat.size (max a' b') = 4 → ktF 16 a' b' ≤ 297) a ha b hb h
+lemma ktau_size5 (a b : ℕ) (h : Nat.size (max a b) = 5) : ktau a b ≤ 494 := by
   obtain ⟨ha, hb⟩ := ktau_size_bound_aux a b 5 32 h (by norm_num)
   rw [ktau_eq_ktF 32 a b (by omega)]
   exact (by decide :
-    ∀ a' < 32, ∀ b' < 32, Nat.size (max a' b') = 5 → ktF 32 a' b' ≤ 292) a ha b hb h
+    ∀ a' < 32, ∀ b' < 32, Nat.size (max a' b') = 5 → ktF 32 a' b' ≤ 494) a ha b hb h
 /-
 Tangent (convexity) bound: an increment of `x^kp` is at most `kp * d * (x+d)^(kp-1)`.
 -/
@@ -392,8 +401,10 @@ lemma fb_core_odd (m : ℕ) (hm : 5 ≤ m) :
       nlinarith only [ show ( m : ℝ ) ≥ 5 by norm_cast, pow_pos ( by positivity : 0 < ( m : ℝ ) ) 3, pow_pos ( by positivity : 0 < ( m : ℝ ) ) 4, pow_pos ( by positivity : 0 < ( m : ℝ ) ) 5 ];
     contrapose! h_pow; gcongr;
   grind
-
-
+/-! ### Tight rational bounds on `kp = log₂ 3` and on small powers `m ^ kp`.
+These replace the previous `native_decide` base cases for `n ∈ {7, 9}`: the odd-`n`
+core inequality is verified analytically from rational enclosures of `kp` obtained by
+comparing integer powers (`decide`/`norm_num` on naturals only). -/
 /-- `19/12 ≤ kp` (from `2 ^ 19 ≤ 3 ^ 12`). -/
 lemma kp_lo : (19 : ℝ) / 12 ≤ kp := by
   rw [kp, Real.le_logb_iff_rpow_le (by norm_num) (by norm_num)]
@@ -474,6 +485,16 @@ lemma fb_core (n : ℕ) (h : 6 ≤ n) :
       unfold fb;
       have := fb_core_odd m hm5 ; norm_num at * ; ring_nf at * ; linarith
 /-
+The core recurrence inequality for the revised cost model (`gb = 2 fb`).
+The per-call cost is now `3 + 2*(n/2) + 7*n ≤ 3 + 8*n ≤ 2*(1 + 7*n)`.
+-/
+lemma gb_core (n : ℕ) (h : 6 ≤ n) :
+    (3 + 8 * (n : ℝ)) + gb (n / 2) + gb (n - n / 2) + gb (n - n / 2 + 1) ≤ gb n := by
+  have hc := fb_core n h
+  unfold gb
+  have hn1 : (1 : ℝ) ≤ (n : ℝ) := by exact_mod_cast (by omega : 1 ≤ n)
+  nlinarith [hc, hn1]
+/-
 Loose lower bound on `fb` from `kp ≥ 3/2`.
 -/
 lemma fb_ge_pow32 (n : ℕ) (hn : 1 ≤ n) :
@@ -483,27 +504,47 @@ lemma fb_ge_pow32 (n : ℕ) (hn : 1 ≤ n) :
 Small-`n` bound (`2 ≤ n ≤ 5`), handled by direct computation on the fuel function `ktF`.
 -/
 lemma ktau_small (a b : ℕ) (h2 : 2 ≤ Nat.size (max a b)) (h5 : Nat.size (max a b) ≤ 5) :
-    (ktau a b : ℝ) ≤ fb (Nat.size (max a b)) := by
-  interval_cases _ : Nat.size ( Max.max a b ) <;> simp_all +decide only;
-  all_goals norm_num [ fb ];
-  any_goals linarith [ show ( ktau a b : ℝ ) ≤ 30 by exact_mod_cast ktau_size2 a b ‹_›, show ( 2 : ℝ ) ^ kp = 3 by exact_mod_cast two_rpow_kp ];
-  exact le_trans ( Nat.cast_le.mpr ( ktau_size3 a b ‹_› ) ) ( by norm_num; linarith [ show ( 3 : ℝ ) ^ kp ≥ 3 ^ ( 3 / 2 : ℝ ) by exact Real.rpow_le_rpow_of_exponent_le ( by norm_num ) ( show kp ≥ 3 / 2 by exact kp_ge ), show ( 3 : ℝ ) ^ ( 3 / 2 : ℝ ) ≥ 5 by rw [ show ( 3 : ℝ ) ^ ( 3 / 2 : ℝ ) = 3 * Real.sqrt 3 by rw [ Real.sqrt_eq_rpow, ← Real.rpow_one_add' ] <;> norm_num ] ; nlinarith [ Real.sqrt_nonneg 3, Real.sq_sqrt ( show 0 ≤ 3 by norm_num ) ] ] );
-  exact le_trans ( Nat.cast_le.mpr ( ktau_size4 a b ‹_› ) ) ( by norm_num; linarith [ show ( 4 : ℝ ) ^ kp ≥ 4 ^ ( 3 / 2 : ℝ ) by exact Real.rpow_le_rpow_of_exponent_le ( by norm_num ) ( show kp ≥ 3 / 2 by exact kp_ge ), show ( 4 : ℝ ) ^ ( 3 / 2 : ℝ ) ≥ 8 by rw [ show ( 4 : ℝ ) ^ ( 3 / 2 : ℝ ) = 4 * Real.sqrt 4 by rw [ Real.sqrt_eq_rpow, ← Real.rpow_one_add' ] <;> norm_num ] ; norm_num ] );
-  · exact le_trans ( Nat.cast_le.mpr ( ktau_size5 a b ‹_› ) ) ( by norm_num; linarith [ show ( 5 : ℝ ) ^ kp ≥ 5 ^ ( 3 / 2 : ℝ ) by exact Real.rpow_le_rpow_of_exponent_le ( by norm_num ) ( show kp ≥ 3 / 2 by exact kp_ge ), show ( 5 : ℝ ) ^ ( 3 / 2 : ℝ ) ≥ 11 by rw [ show ( 5 : ℝ ) ^ ( 3 / 2 : ℝ ) = 5 * Real.sqrt 5 by rw [ Real.sqrt_eq_rpow, ← Real.rpow_one_add' ] <;> norm_num ] ; nlinarith [ Real.sqrt_nonneg 5, Real.sq_sqrt ( show 0 ≤ 5 by norm_num ) ] ] );
-lemma ktau_le_fb (a b : ℕ) (h : 2 ≤ Nat.size (max a b)) :
-    (ktau a b : ℝ) ≤ fb (Nat.size (max a b)) := by
+    (ktau a b : ℝ) ≤ gb (Nat.size (max a b)) := by
+  unfold gb
+  interval_cases hs : Nat.size (max a b)
+  · have hb : (ktau a b : ℝ) ≤ 58 := by exact_mod_cast ktau_size2 a b hs
+    nlinarith [fb_two_ge, hb]
+  · have hb : (ktau a b : ℝ) ≤ 179 := by exact_mod_cast ktau_size3 a b hs
+    nlinarith [fb_three_ge, hb]
+  · have hb : (ktau a b : ℝ) ≤ 297 := by exact_mod_cast ktau_size4 a b hs
+    have hf : fb 4 = 440 := by unfold fb; push_cast; rw [four_rpow_kp]; norm_num
+    nlinarith [hb, hf]
+  · have hb : (ktau a b : ℝ) ≤ 494 := by exact_mod_cast ktau_size5 a b hs
+    have hf : (520 : ℝ) ≤ fb 5 := by
+      unfold fb
+      push_cast
+      have h5kp : (5 : ℝ) ^ ((3 : ℝ) / 2) ≤ (5 : ℝ) ^ kp :=
+        Real.rpow_le_rpow_of_exponent_le (by norm_num) kp_ge
+      have h532 : (11 : ℝ) ≤ (5 : ℝ) ^ ((3 : ℝ) / 2) := by
+        rw [show (5 : ℝ) ^ ((3 : ℝ) / 2) = 5 * Real.sqrt 5 by
+              rw [Real.sqrt_eq_rpow, ← Real.rpow_one_add'] <;> norm_num]
+        nlinarith [Real.sqrt_nonneg 5, Real.sq_sqrt (show (0 : ℝ) ≤ 5 by norm_num)]
+      nlinarith [h5kp, h532]
+    nlinarith [hb, hf]
+lemma ktau_le_gb (a b : ℕ) (h : 2 ≤ Nat.size (max a b)) :
+    (ktau a b : ℝ) ≤ gb (Nat.size (max a b)) := by
   induction' n : Nat.max a b using Nat.strong_induction_on with n ih generalizing a b;
   by_cases hn : Nat.size ( Max.max a b ) ≤ 5;
   · exact ktau_small a b h hn;
   · -- Apply the key sub-bound to each recursive argument.
-    have h_sub_bounds : ∀ a' b', max a' b' < max a b → ∀ s, Nat.size (max a' b') ≤ s → 2 ≤ s → (ktau a' b' : ℝ) ≤ fb s := by
+    have h_sub_bounds : ∀ a' b', max a' b' < max a b → ∀ s, Nat.size (max a' b') ≤ s → 2 ≤ s → (ktau a' b' : ℝ) ≤ gb s := by
       intros a' b' h_max_lt s hs_le hs_ge_two
       by_cases hs : Nat.size (max a' b') ≤ 1;
-      · rw [ ktau_base ] <;> norm_num [ hs ];
-        exact fb_nonneg s hs_ge_two;
-      · exact le_trans ( ih _ ( by aesop ) _ _ ( by linarith ) rfl ) ( fb_mono _ _ ( by linarith ) hs_le );
+      · rw [ ktau_base ] <;> try exact hs
+        have hsz1 : (Nat.size (max a' b') : ℝ) ≤ 1 := by exact_mod_cast hs
+        have : (3 : ℝ) + Nat.size (max a' b') ≤ gb 2 := by
+          have := gb_nonneg 2 (by norm_num); unfold gb fb at *; push_cast;
+          nlinarith [two_rpow_kp, hsz1]
+        push_cast; refine le_trans ?_ (le_trans this (gb_mono 2 s (by norm_num) hs_ge_two));
+        linarith [hsz1]
+      · exact le_trans ( ih _ ( by aesop ) _ _ ( by linarith ) rfl ) ( gb_mono _ _ ( by linarith ) hs_le );
     rw [ ktau_rec a b ( by omega ) ];
-    have h_sub_bounds : (ktau (a % 2 ^ (Nat.size (max a b) / 2)) (b % 2 ^ (Nat.size (max a b) / 2)) : ℝ) ≤ fb (Nat.size (max a b) / 2) ∧ (ktau (a / 2 ^ (Nat.size (max a b) / 2)) (b / 2 ^ (Nat.size (max a b) / 2)) : ℝ) ≤ fb (Nat.size (max a b) - Nat.size (max a b) / 2) ∧ (ktau (a / 2 ^ (Nat.size (max a b) / 2) + a % 2 ^ (Nat.size (max a b) / 2)) (b / 2 ^ (Nat.size (max a b) / 2) + b % 2 ^ (Nat.size (max a b) / 2)) : ℝ) ≤ fb (Nat.size (max a b) - Nat.size (max a b) / 2 + 1) := by
+    have h_sub_bounds : (ktau (a % 2 ^ (Nat.size (max a b) / 2)) (b % 2 ^ (Nat.size (max a b) / 2)) : ℝ) ≤ gb (Nat.size (max a b) / 2) ∧ (ktau (a / 2 ^ (Nat.size (max a b) / 2)) (b / 2 ^ (Nat.size (max a b) / 2)) : ℝ) ≤ gb (Nat.size (max a b) - Nat.size (max a b) / 2) ∧ (ktau (a / 2 ^ (Nat.size (max a b) / 2) + a % 2 ^ (Nat.size (max a b) / 2)) (b / 2 ^ (Nat.size (max a b) / 2) + b % 2 ^ (Nat.size (max a b) / 2)) : ℝ) ≤ gb (Nat.size (max a b) - Nat.size (max a b) / 2 + 1) := by
       refine' ⟨ h_sub_bounds _ _ _ _ _ _, h_sub_bounds _ _ _ _ _ _, h_sub_bounds _ _ _ _ _ _ ⟩;
       any_goals omega;
       exact max_mod_lt_of_size_ge_two a b _ rfl ( by omega );
@@ -512,18 +553,31 @@ lemma ktau_le_fb (a b : ℕ) (h : 2 ≤ Nat.size (max a b)) :
       · exact size_div_le _ _ _ rfl;
       · exact max_sum_lt_of_size_ge_two a b _ rfl ( by omega );
       · exact size_sum_le _ _ _ rfl ( by omega );
-    have := fb_core ( Nat.size ( Max.max a b ) ) ( by omega ) ; norm_num at * ; linarith [ show ( 2 : ℝ ) * ( Nat.size ( Max.max a b ) / 2 : ℕ ) ≤ Nat.size ( Max.max a b ) from by norm_cast; linarith [ Nat.div_mul_le_self ( Nat.size ( Max.max a b ) ) 2 ] ] ;
+    obtain ⟨ hb1, hb2, hb3 ⟩ := h_sub_bounds
+    have hcore := gb_core ( Nat.size ( Max.max a b ) ) ( by omega )
+    have hk : (2 : ℝ) * ((Nat.size (Max.max a b) / 2 : ℕ) : ℝ) ≤ (Nat.size (Max.max a b) : ℝ) := by
+      norm_cast; linarith [ Nat.div_mul_le_self ( Nat.size ( Max.max a b ) ) 2 ]
+    push_cast
+    nlinarith [ hcore, hb1, hb2, hb3, hk ]
+
 /-- Upper bound: T(n) = O(n^{log₂ 3}).
     Since log₂ 3 ≈ 1.585 is irrational, the exponent requires `Real.logb`. -/
-theorem karatsuba_time_upper :
-    ∃ (c : ℝ), c > 0 ∧
+theorem karatsuba_time_bigO :
+    ∃ (c : ℝ) (n0 : ℕ), c > 0 ∧ n0 > 0 ∧
     ∀ (x y : ℤ),
       let n : ℝ := Nat.size (max x.natAbs y.natAbs)
-      ((karatsuba x y).time : ℝ) ≤ c * n ^ Real.logb 2 3 := by
-  use 120, by norm_num;
-  intro x y; by_cases h : 2 ≤ Nat.size ( Max.max x.natAbs y.natAbs ) <;> simp_all +decide [ time_eq_ktau ] ;
-  · refine le_trans ( ktau_le_fb _ _ h ) ?_ ; norm_num [ fb ] ; ring ; norm_num [ kp ];
-  · rw [ ktau_base _ _ ( by omega ) ] ; norm_num;
-    positivity
+      (n ≥ n0) → ((karatsuba x y).time : ℝ) ≤ c * n ^ Real.logb 2 3 := by
+  refine ⟨240, 2, by norm_num, by norm_num, ?_⟩
+  intro x y n hn
+  rw [show n = (Nat.size (max x.natAbs y.natAbs) : ℝ) from rfl] at hn ⊢
+  rw [ time_eq_ktau ]
+  have hsize : 2 ≤ Nat.size ( Max.max x.natAbs y.natAbs ) := by
+    have h2 : ((2 : ℕ) : ℝ) ≤ (Nat.size ( Max.max x.natAbs y.natAbs ) : ℝ) := hn
+    exact_mod_cast h2
+  refine le_trans ( ktau_le_gb _ _ hsize ) ?_
+  unfold gb fb
+  have hpos : (0 : ℝ) ≤ 160 * (Nat.size ( Max.max x.natAbs y.natAbs ) : ℝ) := by positivity
+  rw [ show Real.logb 2 3 = kp from rfl ]
+  nlinarith [ hpos ]
 
 end Cslib.Algorithms.Lean.TimeM.Algorithms.Karatsuba
