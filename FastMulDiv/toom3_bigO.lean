@@ -1,15 +1,4 @@
 -- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun>
-/- add the following to lakefile.toml:
-[[require]]
-name = "mathlib"
-scope = "leanprover-community"
-rev = "v4.30.0-rc2"
-
-[[require]]
-name = "cslib"
-scope = "leanprover"
-rev = "v4.30.0-rc2"
--/
 
 import Mathlib
 import Cslib.Algorithms.Lean.TimeM
