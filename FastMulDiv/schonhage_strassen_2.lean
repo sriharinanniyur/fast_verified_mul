@@ -1,3 +1,6 @@
+-- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun>
+-- with some formalization help from Opus 4.7
+
 import Mathlib
 set_option linter.style.whitespace false
 set_option linter.style.emptyLine false
