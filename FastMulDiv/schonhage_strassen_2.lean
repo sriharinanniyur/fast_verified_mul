@@ -6,7 +6,6 @@ set_option linter.style.whitespace false
 set_option linter.style.emptyLine false
 open scoped ZMod
 
-
 lemma vector_set_forIn_range {α : Type*} (K : ℕ) (a₀ : α) (f : Fin K → α) :
     (Id.run do
       let mut result := Vector.replicate K a₀
