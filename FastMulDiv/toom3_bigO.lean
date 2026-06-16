@@ -1,4 +1,15 @@
 -- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun>
+/- add the following to lakefile.toml:
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.30.0-rc2"
+
+[[require]]
+name = "cslib"
+scope = "leanprover"
+rev = "v4.30.0-rc2"
+-/
 
 import Mathlib
 import Cslib.Algorithms.Lean.TimeM
@@ -170,7 +181,7 @@ lemma ToomCook3.decreasing_w_inf (a b : ℕ) (hn : ¬ Nat.size (max a b) ≤ 3) 
     let i := ((max a b).size + 2) / 3
     (↑(a >>> (i <<< 1)) : ℤ).natAbs + (↑(b >>> (i <<< 1)) : ℤ).natAbs < a + b := by
   have h_ge_4 : 4 ≤ max a b := by
-    contrapose! hn; interval_cases max a b <;> revert hn <;> native_decide;
+    contrapose! hn; interval_cases max a b <;> revert hn <;> decide;
   cases max_cases a b <;> simp_all +decide [ Nat.shiftRight_eq_div_pow ];
   · refine' add_lt_add_of_lt_of_le ( Nat.div_lt_self ( by linarith ) ( one_lt_pow₀ ( by decide ) ( by omega ) ) ) ( Nat.div_le_self _ _ );
   · refine' add_lt_add_of_le_of_lt _ _;
@@ -882,6 +893,5 @@ theorem ToomCook3_big_O :
   intro n hn
   have hh : (n0 : ℝ) ≤ ((max a_raw.natAbs b_raw.natAbs).size : ℝ) := hn
   exact hbound (a_raw, b_raw) (by exact_mod_cast hh)
-
 
 end Cslib.Algorithms.Lean.TimeM.Toom3
