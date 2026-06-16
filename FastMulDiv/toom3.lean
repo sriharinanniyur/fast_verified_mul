@@ -204,15 +204,13 @@ Decreasing proof for the ToomCook3 w_inf call
 lemma ToomCook3.decreasing_w_inf (a b : ℕ) (hn : ¬ Nat.size (max a b) ≤ 3) :
     let i := ((max a b).size + 2) / 3
     (↑(a >>> (i <<< 1)) : ℤ).natAbs + (↑(b >>> (i <<< 1)) : ℤ).natAbs < a + b := by
-  -- By Nat.shiftRight_le, each ≤ original. For strict: max(a,b) ≥ 2^i ≥ 4 (i ≥ 2 since n ≥ 4). So at least one of a,b is ≥ 4.
   have h_ge_4 : 4 ≤ max a b := by
-    contrapose! hn; interval_cases max a b <;> revert hn <;> native_decide;
+    contrapose! hn; interval_cases max a b <;> revert hn <;> decide;
   cases max_cases a b <;> simp_all +decide [ Nat.shiftRight_eq_div_pow ];
   · refine' add_lt_add_of_lt_of_le ( Nat.div_lt_self ( by linarith ) ( one_lt_pow₀ ( by decide ) ( by omega ) ) ) ( Nat.div_le_self _ _ );
   · refine' add_lt_add_of_le_of_lt _ _;
     · exact Nat.div_le_self _ _;
     · exact Nat.div_lt_self ( by linarith ) ( one_lt_pow₀ ( by decide ) ( by norm_num; omega ) )
-
 
 
 -- Following the pseudocode given in *Modern Computer Arithmetic*
