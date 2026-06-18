@@ -52,7 +52,7 @@ lemma max_sum_lt_of_size_ge_two (x y : ℕ) (n : ℕ) (hn : n = Nat.size (max x 
 -- TIME MODELING:
 -- the time model is necessarily inexact. we trade some precision for clarity/generality.
 -- we are modeling the time taken by arithmetic operations. it is reasonable to assume that
--- the shift, add, mask, etc. operations done within ToomCook3 take place in time linear
+-- the shift, add, mask, etc. operations take place in time linear
 -- in the bit length of the operands to each such operation.
 
 -- for instance, we model an addition of ≈ i-bit operands - an O(i) operation - with a `tick (i)`.
