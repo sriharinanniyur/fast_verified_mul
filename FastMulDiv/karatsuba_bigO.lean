@@ -50,11 +50,21 @@ lemma max_sum_lt_of_size_ge_two (x y : ℕ) (n : ℕ) (hn : n = Nat.size (max x 
 
 
 -- TIME MODELING:
--- Same philosophy as ToomCook3: we count shifts and linear-time arithmetic
--- operations, tallying the asymptotic cost per line.
--- Additions/subtractions on k-bit operands cost O(k), modeled as `tick k`.
--- Shifts and masks on n-bit operands cost O(n), modeled as `tick n`.
+-- the time model is necessarily inexact. we trade some precision for clarity/generality.
+-- we are modeling the time taken by arithmetic operations. it is reasonable to assume that
+-- the shift, add, mask, etc. operations done within ToomCook3 take place in time linear
+-- in the bit length of the operands to each such operation.
 
+-- for instance, we model an addition of ≈ i-bit operands - an O(i) operation - with a `tick (i)`.
+-- this is done on a per-line basis: a block of O(1) such O(i) operations on a given line
+-- also gets a `tick i` (as opposed to, say, a `tick (3 * i)` for 3 additions).
+-- so we tally up the **asymptotic** complexity of each **line**, on a **per-line basis**.
+-- it could even be argued that to do this on a per-line basis is not needed,
+-- as there are a constant number of lines. but we think this might be going too far.
+
+-- can we be more precise than this? probably, yes. but if we tried to, then we'd probably
+-- end up making our model too specific to be processor-agnostic. still, we will continue
+-- to try and make our model more specific without losing its wide applicability.
 def karatsuba (x_raw y_raw : ℤ) : TimeM ℕ ℤ := do
   let x := x_raw.natAbs; tick 1;
   let y := y_raw.natAbs; tick 1;
