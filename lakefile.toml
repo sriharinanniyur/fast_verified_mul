@@ -1,7 +1,7 @@
-name = "FastMulDiv"
+name = "fast_verified_mul"
 version = "0.1.0"
 keywords = ["math"]
-defaultTargets = ["FastMulDiv"]
+defaultTargets = ["fast_verified_mul"]
 
 [leanOptions]
 pp.unicode.fun = true # pretty-prints `fun a ↦ b`
@@ -20,5 +20,5 @@ scope = "leanprover"
 rev = "v4.30.0-rc2"
 
 [[lean_lib]]
-name = "FastMulDiv"
+name = "fast_verified_mul"
 
