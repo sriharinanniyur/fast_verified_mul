@@ -47,26 +47,6 @@ noncomputable def t_table (K_pred : ℕ) (inv : Bool) (P : ℕ) :
     Vector (FPComplex P) K_pred :=
   Vector.ofFn fun j : Fin K_pred => twiddle j.val (2 * K_pred) inv P
 
-noncomputable def fft {k : ℕ} (x : Vector (FPComplex P) (2^k)) (inv : Bool) :
-    Vector (FPComplex P) (2^k) :=
-  match k with
-  | 0 => x
-  | k' + 1 =>
-    let K_pred := 2 ^ k'
-    let E : Vector (FPComplex P) K_pred :=
-      Vector.ofFn fun j : Fin K_pred => x[2 * j.val]'(by omega)
-    let O : Vector (FPComplex P) K_pred :=
-      Vector.ofFn fun j : Fin K_pred => x[2 * j.val + 1]'(by omega)
-    let E' := fft E inv
-    let O' := fft O inv
-    let T := t_table K_pred inv P
-    Vector.ofFn fun i : Fin (2^(k'+1)) =>
-      if h : i.val < K_pred then
-        cadd (E'.get ⟨i.val, h⟩) (cmul (T.get ⟨i.val, h⟩) (O'.get ⟨i.val, h⟩))
-      else
-        csub (E'.get ⟨i.val - K_pred, by omega⟩)
-             (cmul (T.get ⟨i.val - K_pred, by omega⟩) (O'.get ⟨i.val - K_pred, by omega⟩))
-
 /-- Complex multiplication with a parameterized integer multiplication function.
     When `mul_fn = (· * ·)`, this equals `cmul`. -/
 def cmul_via (mul_fn : ℤ → ℤ → ℤ) (a b : FPComplex P) : FPComplex P :=
@@ -103,6 +83,28 @@ noncomputable def FFT
       result := result.set j           (cadd p q) (by omega)
       result := result.set (j + K_pred)    (csub p q) (by omega)
     return result
+
+-- pure functional version for proof purposes
+noncomputable def fft {k : ℕ} (x : Vector (FPComplex P) (2^k)) (inv : Bool) :
+    Vector (FPComplex P) (2^k) :=
+  match k with
+  | 0 => x
+  | k' + 1 =>
+    let K_pred := 2 ^ k'
+    let E : Vector (FPComplex P) K_pred :=
+      Vector.ofFn fun j : Fin K_pred => x[2 * j.val]'(by omega)
+    let O : Vector (FPComplex P) K_pred :=
+      Vector.ofFn fun j : Fin K_pred => x[2 * j.val + 1]'(by omega)
+    let E' := fft E inv
+    let O' := fft O inv
+    let T := t_table K_pred inv P
+    Vector.ofFn fun i : Fin (2^(k'+1)) =>
+      if h : i.val < K_pred then
+        cadd (E'.get ⟨i.val, h⟩) (cmul (T.get ⟨i.val, h⟩) (O'.get ⟨i.val, h⟩))
+      else
+        csub (E'.get ⟨i.val - K_pred, by omega⟩)
+             (cmul (T.get ⟨i.val - K_pred, by omega⟩) (O'.get ⟨i.val - K_pred, by omega⟩))
+
 
 @[simp] lemma cmul_via_mul (a b : FPComplex P) : cmul_via (· * ·) a b = cmul a b := rfl
 
