@@ -1,4 +1,5 @@
 -- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun>
+-- and Opus 4.7
 
 import Mathlib
 set_option linter.style.whitespace false

@@ -1,14 +1,17 @@
--- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun>
--- with some formalization help from Opus 4.7
-
 import Mathlib
 
 set_option linter.style.whitespace false
 set_option linter.style.emptyLine false
+set_option maxHeartbeats 3200000
 
-set_option maxHeartbeats 0
+-- final (???) version of this proof.
+-- further refinements would only consist of revising the precision parameter further downwards.
 
-noncomputable section
+/- ========================================================================
+   Section: SSADefs
+   ======================================================================== -/
+
+section SSADefs
 
 /-!
 # Definitions for the SSA multiplication algorithm
@@ -64,6 +67,134 @@ noncomputable def fft {k : ℕ} (x : Vector (FPComplex P) (2^k)) (inv : Bool) :
         csub (E'.get ⟨i.val - K_pred, by omega⟩)
              (cmul (T.get ⟨i.val - K_pred, by omega⟩) (O'.get ⟨i.val - K_pred, by omega⟩))
 
+/-- Complex multiplication with a parameterized integer multiplication function.
+    When `mul_fn = (· * ·)`, this equals `cmul`. -/
+def cmul_via (mul_fn : ℤ → ℤ → ℤ) (a b : FPComplex P) : FPComplex P :=
+  ⟨shr_round (mul_fn a.re b.re - mul_fn a.im b.im) P,
+   shr_round (mul_fn a.re b.im + mul_fn a.im b.re) P⟩
+
+/-- FFT with a parameterized integer multiplication function.
+    Uses `cmul_via mul_fn` for all butterfly twiddle multiplications.
+    When `mul_fn = (· * ·)`, this equals `fft`. -/
+noncomputable def FFT
+    (mul_fn : ℤ → ℤ → ℤ)
+    {k : ℕ}
+    (x : Vector (FPComplex P) (2^k))
+    (inv : Bool)
+    : Vector (FPComplex P) (2^k) :=
+  match k with
+  | 0      => x
+  | k' + 1 => Id.run do
+    let K_pred := 2 ^ k'
+    let K := 2 ^ (k' + 1)
+    let E : Vector (FPComplex P) K_pred :=
+      Vector.ofFn fun j : Fin K_pred => x[2 * j.val]'(by omega)
+    let O : Vector (FPComplex P) K_pred :=
+      Vector.ofFn fun j : Fin K_pred => x[2 * j.val + 1]'(by omega)
+    let E' := FFT mul_fn E inv
+    let O' := FFT mul_fn O inv
+    let T := t_table K_pred inv P
+
+    let mut result := Vector.replicate K {re := 0, im := 0}
+    for h : j in [0:K_pred] do
+      have hj : j < K_pred := h.2.1
+      let p := E'[j]
+      let q:= cmul_via mul_fn T[j] O'[j]
+      result := result.set j           (cadd p q) (by omega)
+      result := result.set (j + K_pred)    (csub p q) (by omega)
+    return result
+
+@[simp] lemma cmul_via_mul (a b : FPComplex P) : cmul_via (· * ·) a b = cmul a b := rfl
+
+/-- A `Vector`-valued `for` loop over `[0:n]` that writes index `j` and index `j + n`
+    on each iteration produces exactly the `Vector.ofFn` of the two write functions. -/
+theorem loop_eq {β : Type*} (n N : ℕ) (lo hi : (j : ℕ) → j < n → β)
+    (hlo : ∀ j (hj : j < n), j < N) (hhi : ∀ j (hj : j < n), j + n < N) (init : β) :
+    (Id.run do
+      let mut result := Vector.replicate N init
+      for h : j in [0:n] do
+        have hj : j < n := h.2.1
+        result := result.set j (lo j hj) (hlo j hj)
+        result := result.set (j + n) (hi j hj) (hhi j hj)
+      return result)
+    = Vector.ofFn (fun i : Fin N =>
+        if h : i.val < n then lo i.val h
+        else if h2 : i.val - n < n ∧ n ≤ i.val then hi (i.val - n) h2.1
+        else init) := by
+  classical
+  set gtot : ℕ → β := fun a => if h : a < n then lo a h else init with hgtot
+  set htot : ℕ → β := fun a => if h : a < n then hi a h else init with hhtot
+  simp only [Id.run, Std.Legacy.Range.forIn'_eq_forIn'_range', Std.Legacy.Range.size,
+    Nat.sub_zero, Nat.add_sub_cancel, Nat.div_one, pure_bind, bind_pure,
+    List.forIn'_pure_yield_eq_foldl]
+  set g0 : Vector β N → ℕ → Vector β N := fun b a =>
+    if h : a < n then (b.set a (gtot a) (hlo a h)).set (a + n) (htot a) (hhi a h) else b with hg0
+  rw [List.foldl_subtype (g := g0), List.unattach_attach]
+  show List.foldl g0 (Vector.replicate N init) (List.range' 0 n) =
+      Vector.ofFn (fun i : Fin N =>
+        if h : i.val < n then lo i.val h
+        else if h2 : i.val - n < n ∧ n ≤ i.val then hi (i.val - n) h2.1
+        else init)
+  · have key : ∀ (l : List ℕ), (∀ a ∈ l, a < n) → ∀ (acc : Vector β N) (i : ℕ) (hi' : i < N),
+        (List.foldl g0 acc l)[i]'hi' =
+          if i ∈ l then gtot i
+          else if (i - n) ∈ l ∧ n ≤ i then htot (i - n) else acc[i]'hi' := by
+      intro l
+      induction l with
+      | nil => intro _ acc i hi'; simp
+      | cons a t ih =>
+        intro hlt acc i hi'
+        have ha : a < n := hlt a (List.mem_cons_self ..)
+        simp only [List.foldl_cons]
+        rw [ih (fun x hx => hlt x (List.mem_cons_of_mem _ hx))]
+        simp only [hg0, ha, dif_pos]
+        rw [Vector.getElem_set, Vector.getElem_set]
+        simp only [List.mem_cons]
+        grind
+    apply Vector.ext
+    intro i hi'
+    rw [Vector.getElem_ofFn, key _ (by intro a ha; simpa [List.mem_range'] using ha)]
+    have c1 : (i ∈ List.range' 0 n) ↔ i < n := by simp
+    have c2 : (i - n ∈ List.range' 0 n) ↔ i - n < n := by simp
+    simp only [c1, c2, Vector.getElem_replicate, hgtot, hhtot]
+    grind
+  · intro b x hx
+    have hxn : x < n := by simpa [List.mem_range'] using hx
+    simp only [hg0, hgtot, hhtot, dif_pos hxn]
+
+/-
+Characterization of the do-notation `FFT` at the successor step: the imperative
+    loop produces exactly the `Vector.ofFn` butterfly form.
+-/
+lemma FFT_succ (mul_fn : ℤ → ℤ → ℤ) {k' : ℕ}
+    (x : Vector (FPComplex P) (2^(k'+1))) (inv : Bool) :
+    FFT mul_fn x inv =
+      (Vector.ofFn fun i : Fin (2^(k'+1)) =>
+        if h : i.val < 2 ^ k' then
+          cadd ((FFT mul_fn (Vector.ofFn fun j : Fin (2^k') => x[2 * j.val]'(by omega)) inv).get ⟨i.val, h⟩)
+               (cmul_via mul_fn ((t_table (2^k') inv P).get ⟨i.val, h⟩)
+                                ((FFT mul_fn (Vector.ofFn fun j : Fin (2^k') => x[2 * j.val + 1]'(by omega)) inv).get ⟨i.val, h⟩))
+        else
+          csub ((FFT mul_fn (Vector.ofFn fun j : Fin (2^k') => x[2 * j.val]'(by omega)) inv).get ⟨i.val - 2^k', by omega⟩)
+               (cmul_via mul_fn ((t_table (2^k') inv P).get ⟨i.val - 2^k', by omega⟩)
+                                ((FFT mul_fn (Vector.ofFn fun j : Fin (2^k') => x[2 * j.val + 1]'(by omega)) inv).get ⟨i.val - 2^k', by omega⟩))) := by
+  rw [ FFT ];
+  convert loop_eq ( 2 ^ k' ) ( 2 ^ ( k' + 1 ) ) _ _ ( fun j hj => by omega ) ( fun j hj => by omega ) _ using 1;
+  rotate_left;
+  rotate_left;
+  exact fun j hj => ( FFT mul_fn ( Vector.ofFn fun j : Fin ( 2 ^ k' ) => x[2 * j.val] ) inv ).get ⟨ j, hj ⟩ |> fun p => p.cadd ( cmul_via mul_fn ( t_table ( 2 ^ k' ) inv P |> Vector.get <| ⟨ j, hj ⟩ ) ( FFT mul_fn ( Vector.ofFn fun j : Fin ( 2 ^ k' ) => x[2 * j.val + 1] ) inv |> Vector.get <| ⟨ j, hj ⟩ ) );
+  exact fun j hj => ( FFT mul_fn ( Vector.ofFn fun j : Fin ( 2 ^ k' ) => x[2 * j.val] ) inv ).get ⟨ j, hj ⟩ |> fun p => p.csub ( cmul_via mul_fn ( t_table ( 2 ^ k' ) inv P |> Vector.get <| ⟨ j, hj ⟩ ) ( FFT mul_fn ( Vector.ofFn fun j : Fin ( 2 ^ k' ) => x[2 * j.val + 1] ) inv |> Vector.get <| ⟨ j, hj ⟩ ) );
+  exact ⟨ 0, 0 ⟩;
+  · simp +decide [ Vector.get ];
+  · grind
+
+lemma FFT_mul_eq_fft {k : ℕ} (x : Vector (FPComplex P) (2^k)) (inv : Bool) :
+    FFT (· * ·) x inv = fft x inv := by
+  induction' k with k ih generalizing inv
+  · rfl
+  · rw [FFT_succ, fft]
+    simp only [← ih, cmul_via_mul]
+
 def ofInt (n : ℤ) : FPComplex P := ⟨n * 2^P, 0⟩
 
 def round_re (a : FPComplex P) : ℤ :=
@@ -73,39 +204,46 @@ end FPComplex
 
 def bits (x : ℤ) : ℕ := Nat.log 2 x.natAbs + 1
 
-lemma exist_n_l (N : ℕ) (hN : 64 < N) :
-    ∃ n l : ℕ, l * 2 ^ n ≥ 2 * N ∧ n ≥ 1 ∧ l ≥ 1 ∧ 2 * (3 * n + 3 * l + 5) ≤ N := by
-  set n := Nat.log 2 (2*N) + 1
-  refine ⟨n, 1, ?_, ?_, ?_, ?_⟩
-  · simp; exact Nat.le_of_lt (Nat.lt_pow_succ_log_self (by decide) _)
-  · exact Nat.succ_pos _
-  · exact le_refl _
-  · simp only [n]
-    set k := Nat.log 2 (2 * N) with hk_def
-    have hk7 : k ≥ 7 := by
-      have : 2 ^ 7 ≤ 2 * N := by omega
-      exact (Nat.le_log_iff_pow_le (by norm_num) (by omega)).mpr this
-    have hN_lb : N ≥ 2 ^ (k - 1) := by
-      have h1 : 2 ^ k ≤ 2 * N := Nat.pow_log_le_self 2 (by omega)
-      have hk_pos : 1 ≤ k := by omega
-      calc N = (2 * N) / 2 := by omega
-        _ ≥ 2 ^ k / 2 := Nat.div_le_div_right h1
-        _ = 2 ^ (k - 1) := by rw [Nat.pow_div hk_pos (by norm_num)]
-    suffices h : 6 * k + 22 ≤ 2 ^ (k - 1) by omega
-    have key : ∀ m : ℕ, 6 * (m + 7) + 22 ≤ 2 ^ (m + 6) := by
-      intro m
-      induction m with
-      | zero => norm_num
-      | succ n ih =>
-        have : 2 ^ (n + 1 + 6) = 2 * 2 ^ (n + 6) := by
-          rw [show n + 1 + 6 = (n + 6) + 1 from by omega, pow_succ]; ring
-        omega
-    have ⟨m, hm⟩ : ∃ m, k = m + 7 := ⟨k - 7, by omega⟩
-    calc 6 * k + 22 = 6 * (m + 7) + 22 := by omega
-      _ ≤ 2 ^ (m + 6) := key m
-      _ = 2 ^ (k - 1) := by congr 1; omega
+/-- The concrete choice of FFT parameters `l` and `n` used by `ssa`.
 
-def knuth_bound (n l : ℕ) : ℕ := 4 * n + 2 * l + 4
+    `l = clog 2 N` is the per-digit bit width and
+    `n = clog 2 (⌈2N / l⌉)` gives the transform size `K = 2 ^ n`.
+
+    This replaces the earlier existential `exist_n_l`: because `n` and `l` are now
+    chosen concretely, the relevant facts are packaged here. The crucial
+    no-aliasing bound `l * 2 ^ n ≥ 2 * N` is what makes the FFT convolution
+    compute the *linear* (not merely circular) convolution, hence the product.
+
+    Note: the divisor uses **ceiling** division `(2 * N + l - 1) / l` rather than
+    floor `(2 * N) / l`.  With floor division the bound `l * 2 ^ n ≥ 2 * N` fails
+    for infinitely many `N` (the smallest being `N = 113`), which would make the
+    algorithm incorrect; ceiling division restores it for every `N > 64`. -/
+lemma ssa_params (N : ℕ) (hN : 64 < N) :
+    let l := Nat.clog 2 N
+    let n := Nat.clog 2 ((2 * N + l - 1) / l)
+    n ≥ 1 ∧ l ≥ 1 ∧ l * 2 ^ n ≥ 2 * N ∧ l ≤ N := by
+  intro l n
+  have hlN : l ≤ N := by
+    have h : N ≤ 2^N := Nat.le_of_lt Nat.lt_two_pow_self
+    exact (Nat.clog_le_iff_le_pow (b := 2) (by norm_num)).2 h
+  have hl1 : l ≥ 1 := by
+    show 0 < Nat.clog 2 N
+    exact Nat.clog_pos (by norm_num) (by omega)
+  have hldvd : l * ((2*N + l - 1)/l) ≥ 2*N := by
+    have h := Nat.div_add_mod (2*N + l - 1) l
+    have hmod : (2*N + l - 1) % l < l := Nat.mod_lt _ (by omega)
+    omega
+  have hm2 : 2 ≤ (2*N + l - 1)/l := by
+    rw [Nat.le_div_iff_mul_le (by omega : 0 < l)]; omega
+  have hn1 : n ≥ 1 := by
+    show 0 < Nat.clog 2 ((2*N + l - 1)/l)
+    exact Nat.clog_pos (by norm_num) (by omega)
+  have hpow : ((2*N + l - 1)/l) ≤ 2 ^ n := Nat.le_pow_clog (by norm_num) _
+  refine ⟨hn1, hl1, ?_, hlN⟩
+  calc 2 * N ≤ l * ((2*N + l - 1)/l) := hldvd
+    _ ≤ l * 2^n := Nat.mul_le_mul_left l hpow
+
+def precision_bound (n l : ℕ) : ℕ := 4 * n + 2 * l + 4
 
 def decompose_digit (x : ℕ) (l K j : ℕ) : ℤ :=
   let shift := l * (if j < K - 1 then j else K - 1)
@@ -197,105 +335,23 @@ lemma decompose_digit_support (x : ℕ) (l K : ℕ) (N : ℕ)
   unfold decompose_digit
   grind
 
-namespace FPComplex
 
-/-! ## Bounds on fixed-point operations -/
+end SSADefs
 
-/-- `shr_round v P` is bounded: |shr_round v P| ≤ (|v| + 2^(P-1)) / 2^P when P > 0,
-    and equals v when P = 0. -/
-lemma shr_round_eq_zero (v : ℤ) : shr_round v 0 = v := by
-  simp [shr_round]
 
-/-- Integer shift right is floor division -/
-lemma int_shr_eq_div (v : ℤ) (n : ℕ) : v >>> n = v / 2^n := by
-  exact Int.shiftRight_eq_div_pow v n
+/- ========================================================================
+   Section: DFTTheory
+   ======================================================================== -/
 
-/-- shr_round for P > 0 -/
-lemma shr_round_pos (v : ℤ) (P : ℕ) (hP : P ≥ 1) :
-    shr_round v P = (v + 2^(P-1)) / 2^P := by
-  simp [shr_round, show P ≠ 0 by omega]
-  rw [int_shr_eq_div]
+section DFTTheory
 
-/-
-Bound on natAbs of shr_round
+/-!
+# Discrete Fourier Transform theory
+
+This file develops the algebraic theory of the DFT and proves the
+circular convolution theorem, which is the mathematical foundation
+for the SSA multiplication algorithm.
 -/
-lemma shr_round_natAbs_le (v : ℤ) (P : ℕ) (hP : P ≥ 1) :
-    (shr_round v P).natAbs ≤ (v.natAbs + 2^(P-1)) / 2^P + 1 := by
-  have h_natAbs_div_le : ∀ (a b : ℕ) (c : ℤ), 0 < b → c.natAbs ≤ a → (c / b).natAbs ≤ a / b + 1 := by
-    intros a b c hb hc
-    have h_natAbs_div_le : (c / b).natAbs ≤ a / b + 1 := by
-      have h_div_le : c ≤ a ∧ -c ≤ a := by
-        grind
-      cases abs_cases ( c / b ) <;> nlinarith [ Int.mul_ediv_add_emod c b, Int.emod_nonneg c ( by positivity : ( b : ℤ ) ≠ 0 ), Int.emod_lt_of_pos c ( by positivity : ( b : ℤ ) > 0 ), Nat.div_add_mod a b, Nat.mod_lt a hb ];
-    exact h_natAbs_div_le;
-  convert h_natAbs_div_le ( Int.natAbs v + 2 ^ ( P - 1 ) ) ( 2 ^ P ) ( v + 2 ^ ( P - 1 ) ) ( by positivity ) _ using 1 ; norm_num [ shr_round_pos v P hP ];
-  convert Int.natAbs_add_le v ( 2 ^ ( P - 1 ) ) using 1
-
-/-- cadd component bound -/
-lemma cadd_re (a b : FPComplex P) : (cadd a b).re = a.re + b.re := by
-  simp [cadd]
-
-lemma cadd_im (a b : FPComplex P) : (cadd a b).im = a.im + b.im := by
-  simp [cadd]
-
-/-- csub component bound -/
-lemma csub_re (a b : FPComplex P) : (csub a b).re = a.re - b.re := by
-  simp [csub]
-
-lemma csub_im (a b : FPComplex P) : (csub a b).im = a.im - b.im := by
-  simp [csub]
-
-/-- natAbs bound for addition -/
-lemma natAbs_add_le (a b : ℤ) : (a + b).natAbs ≤ a.natAbs + b.natAbs := by
-  exact Int.natAbs_add_le a b
-
-/-- natAbs bound for subtraction -/
-lemma natAbs_sub_le (a b : ℤ) : (a - b).natAbs ≤ a.natAbs + b.natAbs := by
-  exact Int.natAbs_sub_le a b
-
-/-- Bound on `ofInt` components -/
-lemma ofInt_re (n : ℤ) : (ofInt n : FPComplex P).re = n * 2^P := by
-  simp [ofInt]
-
-lemma ofInt_im (n : ℤ) : (ofInt n : FPComplex P).im = 0 := by
-  simp [ofInt]
-
-end FPComplex
-
-/-! ## Bounds on decompose_digit -/
-
-/-
-decompose_digit always returns nonneg values
--/
-lemma decompose_digit_nonneg (x l K j : ℕ) : 0 ≤ decompose_digit x l K j := by
-  unfold decompose_digit;
-  grind
-
-/-
-decompose_digit for j < K-1 is bounded by 2^l
--/
-lemma decompose_digit_bound_interior (x l K j : ℕ) (hj : j < K - 1) :
-    decompose_digit x l K j < 2^l := by
-  unfold decompose_digit;
-  norm_num [ Nat.shiftLeft_eq, Nat.shiftRight_eq_div_pow ];
-  split_ifs ; exact Int.emod_lt_of_pos _ ( by positivity )
-
-/-
-The twiddle factor components are bounded by 2^P + 1
--/
-lemma twiddle_re_bound (j K : ℕ) (inv : Bool) (P : ℕ) :
-    |(FPComplex.twiddle j K inv P : FPComplex P).re| ≤ 2^P + 1 := by
-  norm_num [ FPComplex.twiddle ];
-  rw [ abs_le ];
-  constructor <;> rw [ round_eq ] <;> norm_num [ Int.floor_le, Int.le_floor ];
-  · exact Int.le_of_lt_add_one ( by rw [ ← @Int.cast_lt ℝ ] ; push_cast; nlinarith [ Real.neg_one_le_cos ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ), Real.cos_le_one ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ), Int.lt_floor_add_one ( Real.cos ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ) * 2 ^ P + 1 / 2 ), pow_pos ( zero_lt_two' ℝ ) P ] );
-  · exact Int.le_of_lt_add_one ( Int.floor_lt.mpr ( by norm_num; nlinarith [ Real.cos_le_one ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ), show ( 2 : ℝ ) ^ P > 0 by positivity ] ) )
-
-lemma twiddle_im_bound (j K : ℕ) (inv : Bool) (P : ℕ) :
-    |(FPComplex.twiddle j K inv P : FPComplex P).im| ≤ 2^P + 1 := by
-  unfold FPComplex.twiddle;
-  norm_num [ abs_le, round_eq ];
-  constructor <;> exact Int.le_of_lt_add_one <| by rw [ ← @Int.cast_lt ℝ ] ; push_cast ; nlinarith [ Real.neg_one_le_sin ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ), Real.sin_le_one ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ), Int.floor_le ( Real.sin ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ) * 2 ^ P + 1 / 2 ), Int.lt_floor_add_one ( Real.sin ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ) * 2 ^ P + 1 / 2 ), pow_pos ( zero_lt_two' ℝ ) P ] ;
 
 open Complex Finset
 
@@ -403,26 +459,93 @@ theorem dft_convolution_theorem (K : ℕ) (hK : K ≥ 2)
   simp +decide only [mul_comm, sum_mul, mul_assoc, mul_left_comm];
   simp +decide only [Finset.mul_sum _ _ _, mul_left_comm]
 
-/-
-Component bound on DFT: ‖DFT[m]‖ ≤ K * max‖x[j]‖
--/
-lemma dft_norm_bound (K : ℕ) (x : Fin K → ℂ) (M : ℝ) (_hM : M ≥ 0)
-    (hx : ∀ j : Fin K, ‖x j‖ ≤ M) (m : Fin K) :
-    ‖dft K x m‖ ≤ K * M := by
-  refine' le_trans ( norm_sum_le _ _ ) _;
-  convert Finset.sum_le_sum fun i _ => hx i using 2 ; norm_num [ omega, _hM ];
-  · norm_num [ Complex.norm_exp ];
-  · norm_num [ mul_comm ]
-
 end
+
+end DFTTheory
+
+
+/- ========================================================================
+   Section: SSAHelpers
+   ======================================================================== -/
+
+section SSAHelpers
+
+/-!
+# Helper lemmas for FFT bounds in SSA multiplication
+
+This file contains helper lemmas for bounding FFT operations,
+building toward `fft_output_natAbs_bound` and `fft_convolution_correct`.
+-/
+
+namespace FPComplex
+
+/-! ## Bounds on fixed-point operations -/
+
+/-- Integer shift right is floor division -/
+lemma int_shr_eq_div (v : ℤ) (n : ℕ) : v >>> n = v / 2^n := by
+  exact Int.shiftRight_eq_div_pow v n
+
+/-- shr_round for P > 0 -/
+lemma shr_round_pos (v : ℤ) (P : ℕ) (hP : P ≥ 1) :
+    shr_round v P = (v + 2^(P-1)) / 2^P := by
+  simp [shr_round, show P ≠ 0 by omega]
+  rw [int_shr_eq_div]
+
+/-- natAbs bound for addition -/
+lemma natAbs_add_le (a b : ℤ) : (a + b).natAbs ≤ a.natAbs + b.natAbs := by
+  exact Int.natAbs_add_le a b
+
+/-- natAbs bound for subtraction -/
+lemma natAbs_sub_le (a b : ℤ) : (a - b).natAbs ≤ a.natAbs + b.natAbs := by
+  exact Int.natAbs_sub_le a b
+
+end FPComplex
+
+/-! ## Bounds on decompose_digit -/
+
+/-
+decompose_digit always returns nonneg values
+-/
+lemma decompose_digit_nonneg (x l K j : ℕ) : 0 ≤ decompose_digit x l K j := by
+  unfold decompose_digit;
+  grind
+
+/-
+The twiddle factor components are bounded by 2^P + 1
+-/
+lemma twiddle_re_bound (j K : ℕ) (inv : Bool) (P : ℕ) :
+    |(FPComplex.twiddle j K inv P : FPComplex P).re| ≤ 2^P + 1 := by
+  norm_num [ FPComplex.twiddle ];
+  rw [ abs_le ];
+  constructor <;> rw [ round_eq ] <;> norm_num [ Int.floor_le, Int.le_floor ];
+  · exact Int.le_of_lt_add_one ( by rw [ ← @Int.cast_lt ℝ ] ; push_cast; nlinarith [ Real.neg_one_le_cos ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ), Real.cos_le_one ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ), Int.lt_floor_add_one ( Real.cos ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ) * 2 ^ P + 1 / 2 ), pow_pos ( zero_lt_two' ℝ ) P ] );
+  · exact Int.le_of_lt_add_one ( Int.floor_lt.mpr ( by norm_num; nlinarith [ Real.cos_le_one ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ), show ( 2 : ℝ ) ^ P > 0 by positivity ] ) )
+
+lemma twiddle_im_bound (j K : ℕ) (inv : Bool) (P : ℕ) :
+    |(FPComplex.twiddle j K inv P : FPComplex P).im| ≤ 2^P + 1 := by
+  unfold FPComplex.twiddle;
+  norm_num [ abs_le, round_eq ];
+  constructor <;> exact Int.le_of_lt_add_one <| by rw [ ← @Int.cast_lt ℝ ] ; push_cast ; nlinarith [ Real.neg_one_le_sin ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ), Real.sin_le_one ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ), Int.floor_le ( Real.sin ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ) * 2 ^ P + 1 / 2 ), Int.lt_floor_add_one ( Real.sin ( ( if inv = true then - ( 2 * Real.pi * j ) else 2 * Real.pi * j ) / K ) * 2 ^ P + 1 / 2 ), pow_pos ( zero_lt_two' ℝ ) P ] ;
+
+end SSAHelpers
+
+
+/- ========================================================================
+   Section: SSABounds
+   ======================================================================== -/
+
+section SSABounds
+
+/-!
+# FFT output bounds for SSA multiplication
+
+This file develops bounds on FFT output magnitudes, building toward
+`fft_output_natAbs_bound`.
+-/
 
 namespace FPComplex
 
 variable {P : ℕ}
-
-/-- Maximum component magnitude of an FPComplex vector -/
-noncomputable def max_component {n : ℕ} (v : Vector (FPComplex P) n) : ℕ :=
-  Finset.sup Finset.univ fun i : Fin n => max (v.get i).re.natAbs (v.get i).im.natAbs
 
 /-- Bound on cadd components -/
 lemma cadd_natAbs_re_le (a b : FPComplex P) :
@@ -441,34 +564,6 @@ lemma csub_natAbs_re_le (a b : FPComplex P) :
 lemma csub_natAbs_im_le (a b : FPComplex P) :
     (csub a b).im.natAbs ≤ a.im.natAbs + b.im.natAbs := by
   simp [csub]; exact Int.natAbs_sub_le _ _
-
-/-
-Bound on shr_round for P ≥ 1: |shr_round v P| ≤ |v| / 2^P + 1
--/
-lemma shr_round_natAbs_le' (v : ℤ) (P : ℕ) (hP : P ≥ 1) :
-    (shr_round v P).natAbs ≤ v.natAbs / 2^(P-1) + 1 := by
-  rw [ shr_round_pos _ _ hP ];
-  rcases P with ( _ | P ) <;> simp_all +decide [ pow_succ' ];
-  rw [ ← Int.ofNat_le ] ; norm_num;
-  rw [ abs_le ];
-  constructor <;> cases abs_cases v <;> nlinarith [ Int.mul_ediv_add_emod ( v + 2 ^ P ) ( 2 * 2 ^ P ), Int.emod_nonneg ( v + 2 ^ P ) ( by positivity : ( 2 * 2 ^ P : ℤ ) ≠ 0 ), Int.emod_lt_of_pos ( v + 2 ^ P ) ( by positivity : ( 2 * 2 ^ P : ℤ ) > 0 ), pow_pos ( by decide : 0 < 2 ) P, Int.mul_ediv_add_emod ( |v| ) ( 2 ^ P ), Int.emod_nonneg ( |v| ) ( by positivity : ( 2 ^ P : ℤ ) ≠ 0 ), Int.emod_lt_of_pos ( |v| ) ( by positivity : ( 2 ^ P : ℤ ) > 0 ) ]
-
-/-
-Bound on cmul components: if |a.re|, |a.im| ≤ Ma and |b.re|, |b.im| ≤ Mb,
-    then |cmul(a,b).re|, |cmul(a,b).im| ≤ 2*Ma*Mb / 2^(P-1) + 1
--/
-lemma cmul_natAbs_bound (a b : FPComplex P) (Ma Mb : ℕ) (hP : P ≥ 1)
-    (ha_re : a.re.natAbs ≤ Ma) (ha_im : a.im.natAbs ≤ Ma)
-    (hb_re : b.re.natAbs ≤ Mb) (hb_im : b.im.natAbs ≤ Mb) :
-    (cmul a b).re.natAbs ≤ 2 * Ma * Mb / 2^(P-1) + 1 ∧
-    (cmul a b).im.natAbs ≤ 2 * Ma * Mb / 2^(P-1) + 1 := by
-  constructor;
-  · convert shr_round_natAbs_le' ( a.re * b.re - a.im * b.im ) P hP |> le_trans <| ?_ using 1;
-    gcongr;
-    exact le_trans ( Int.natAbs_sub_le _ _ ) ( by nlinarith [ abs_mul a.re b.re, abs_mul a.im b.im, abs_nonneg a.re, abs_nonneg b.re, abs_nonneg a.im, abs_nonneg b.im ] );
-  · refine' le_trans ( shr_round_natAbs_le' _ _ hP ) _;
-    gcongr;
-    exact le_trans ( Int.natAbs_add_le _ _ ) ( by nlinarith [ abs_mul a.re b.im, abs_mul a.im b.re, abs_nonneg a.re, abs_nonneg a.im, abs_nonneg b.re, abs_nonneg b.im ] )
 
 end FPComplex
 
@@ -493,15 +588,6 @@ lemma decompose_digit_bound_all (x l K : ℕ) (N : ℕ) (hl : l ≥ 1) (hK : K �
   · refine' lt_of_le_of_lt ( Nat.cast_le.mpr <| Nat.and_le_right ) _ ; norm_num [ Nat.shiftLeft_eq, Nat.pow_succ' ];
   · rw [ if_neg ( by omega ) ] ; norm_cast ; simp +decide [ Nat.shiftRight_eq_div_pow ] ; (
     exact lt_of_le_of_lt ( Nat.div_le_div_right hx.le ) ( by rw [ Nat.div_lt_iff_lt_mul <| by positivity ] ; rw [ ← pow_add ] ; exact pow_lt_pow_right₀ ( by decide ) <| by nlinarith [ Nat.sub_add_cancel ( by linarith : 1 ≤ K ) ] ) ;);
-
-/-
-The FPComplex.ofInt of bounded values has bounded components
--/
-lemma ofInt_bound (v : ℤ) (M : ℕ) (hv : v.natAbs ≤ M) :
-    (FPComplex.ofInt v : FPComplex P).re.natAbs ≤ M * 2^P ∧
-    (FPComplex.ofInt v : FPComplex P).im.natAbs = 0 := by
-  simp +decide [ FPComplex.ofInt, Int.natAbs_mul ];
-  exact hv
 
 /-! ## FFT characterization lemmas -/
 
@@ -536,23 +622,34 @@ lemma fft_second_half {k' : ℕ} (x : Vector (FPComplex P) (2^(k'+1))) (inv : Bo
 
 end FPComplex
 
+
+end SSABounds
+
+
+/- ========================================================================
+   Section: FFTError
+   ======================================================================== -/
+
+section FFTError
+
+/-!
+# FFT Error Analysis
+
+This file develops the error analysis for the fixed-point FFT pipeline.
+The key result is that the FFT pipeline with precision P = 4n + 2l + 4
+computes the circular convolution with error < K * 2^(P-1).
+-/
+
+open Complex Finset
+
+noncomputable section
+
+/-! ## Part 1: Generalized DFT -/
+
 /-- The generalized DFT, handling both forward (inv=false) and inverse (inv=true). -/
 def gen_dft (K : ℕ) (x : Fin K → ℂ) (inv : Bool) (m : Fin K) : ℂ :=
   let w := if inv then (omega K)⁻¹ else omega K
   ∑ j : Fin K, x j * w ^ (m.val * j.val)
-
-/-- Forward gen_dft equals dft -/
-lemma gen_dft_false_eq_dft (K : ℕ) (x : Fin K → ℂ) (m : Fin K) :
-    gen_dft K x false m = dft K x m := by
-  simp [gen_dft, dft]
-
-/-
-Inverse gen_dft equals K * idft
--/
-lemma gen_dft_true_eq_K_idft (K : ℕ) (hK : K ≥ 2) (x : Fin K → ℂ) (m : Fin K) :
-    gen_dft K x true m = (K : ℂ) * idft K x m := by
-  unfold gen_dft idft; simp +decide [ mul_comm, mul_assoc, mul_left_comm, Finset.mul_sum ] ; ring;
-  exact Finset.sum_congr rfl fun _ _ => by rw [ mul_inv_cancel_right₀ ( by norm_cast; linarith ) ] ; ring;
 
 /-! ## Part 2: Exact FFT (defined as gen_dft) -/
 
@@ -668,62 +765,7 @@ lemma gen_dft_cooley_tukey_hi (K : ℕ) (hK : K ≥ 1) (x : Fin (2*K) → ℂ) (
     norm_num [ mul_assoc, mul_comm Real.pi ];
     constructor <;> ring
 
-/-
-Twiddle factor equals omega power (forward)
--/
-lemma twiddle_eq_omega_pow (K j : ℕ) (hK : K ≥ 1) :
-    Complex.exp (↑((1 : ℝ) * 2 * Real.pi * ↑j / (2 * ↑K)) * Complex.I) = omega (2 * K) ^ j := by
-  convert Complex.exp_nat_mul _ _ using 2 ; push_cast ; ring
-
-/-
-Twiddle factor equals omega inverse power (inverse)
--/
-lemma twiddle_eq_omega_inv_pow (K j : ℕ) (hK : K ≥ 1) :
-    Complex.exp (↑((-1 : ℝ) * 2 * Real.pi * ↑j / (2 * ↑K)) * Complex.I) = (omega (2 * K))⁻¹ ^ j := by
-  convert Complex.exp_nat_mul _ _ using 2 ; ring ; norm_num ; ring;
-  rotate_right;
-  exact - ( Real.pi * ( K : ℂ ) ⁻¹ * I );
-  · ring;
-  · unfold omega; norm_num [ Complex.exp_neg ] ; ring;
-
-/-- The exact butterfly FFT computes the generalized DFT. -/
-lemma exact_fft_eq_gen_dft (k : ℕ) (x : Fin (2^k) → ℂ) (inv : Bool) :
-    ∀ m : Fin (2^k), exact_fft k x inv m = gen_dft (2^k) x inv m := by
-  intro m; rfl
-
 /-! ## Part 4: Exact pipeline gives K * circular convolution -/
-
-/-
-When A_digits and B_digits are integer sequences embedded in ℂ,
-    the exact FFT pipeline gives K * circular convolution.
--/
-lemma exact_pipeline_eq_conv (n : ℕ) (hn : n ≥ 1)
-    (A_digits B_digits : Fin (2^n) → ℤ) :
-    let K := 2^n
-    let A_exact : Fin K → ℂ := fun j => (↑(A_digits j) : ℂ)
-    let B_exact : Fin K → ℂ := fun j => (↑(B_digits j) : ℂ)
-    let A_hat_exact := exact_fft n A_exact false
-    let B_hat_exact := exact_fft n B_exact false
-    let C_hat_exact : Fin K → ℂ := fun m => A_hat_exact m * B_hat_exact m
-    let C_exact := exact_fft n C_hat_exact true
-    ∀ m : Fin K,
-      C_exact m = (↑K : ℂ) * ↑(∑ j : Fin K, ∑ k : Fin K,
-        if (j.val + k.val) % K = m.val then A_digits j * B_digits k else 0) := by
-  intro K A_exact B_exact A_hat_exact B_hat_exact C_hat_exact C_exact m
-  have hA_hat_exact : A_hat_exact = fun m => dft K A_exact m := by
-    funext m; exact (by
-    convert exact_fft_eq_gen_dft n A_exact false m using 1);
-  have hB_hat_exact : B_hat_exact = fun m => dft K B_exact m := by
-    ext m; exact (by
-    convert exact_fft_eq_gen_dft n B_exact false m using 1)
-  have hC_hat_exact : C_hat_exact = fun m => dft K (circular_conv K A_exact B_exact) m := by
-    ext m; simp [C_hat_exact, hA_hat_exact, hB_hat_exact, dft_convolution_theorem];
-    exact Eq.symm ( dft_convolution_theorem K ( show 2 ≤ 2 ^ n by exact le_trans ( by decide ) ( pow_le_pow_right₀ ( by decide ) hn ) ) A_exact B_exact m )
-  have hC_exact : C_exact = fun m => K * idft K (dft K (circular_conv K A_exact B_exact)) m := by
-    grind +suggestions
-  simp_all +decide [ idft_dft ];
-  convert Or.inl ( idft_dft K ( show K ≥ 2 from _ ) ( circular_conv K A_exact B_exact ) m ) using 1;
-  exact le_trans ( by decide ) ( pow_le_pow_right₀ ( by decide ) hn )
 
 /-! ## Part 5: FFT error bounds
 
@@ -734,10 +776,6 @@ For real inputs (forward FFT): error ≤ (M + 1)(3^k - 2^k) where M_level = 2^k 
 For complex inputs (inverse FFT): error ≤ (ε_0 + 2M + 1) * 3^k.
 
 We state a unified bound that works for both cases. -/
-
-/- Dead code: `fft_error_bound` was planned as a forward declaration, but it creates a circular
-   dependency (FFTError → FFTErrorInduction → FFTError). The actual critical path uses
-   `fft_error_bound'` from FFTErrorInduction.lean directly. -/
 
 /-! ## Part 6: cmul error bound -/
 
@@ -834,43 +872,6 @@ lemma cmul_error_bound (P : ℕ) (hP : P ≥ 1)
 /-! ## Part 7: Numerical bounds -/
 
 /-
-9^n < 2^(4n) for n ≥ 1
--/
-lemma nine_pow_lt (n : ℕ) (hn : n ≥ 1) : (9 : ℝ)^n < 2^(4*n) := by
-  rw [ pow_mul ] ; gcongr ; norm_num
-
-/-- 3^n ≤ 4^n = 2^{2n} -/
-lemma three_pow_le_four_pow (n : ℕ) : (3 : ℝ)^n ≤ 4^n := by
-  gcongr; norm_num
-
-/-
-The total pipeline error is < K * 2^(P-1)
--/
-lemma pipeline_numerical_bound (n l : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) :
-    let P := knuth_bound n l
-    let K := 2^n
-    -- Forward FFT error
-    let ε_fwd := ((2 : ℝ)^l + 1) * 3^n
-    -- DFT magnitude
-    let M_dft := (K : ℝ) * 2^l
-    -- cmul error
-    let ε_cmul := 2 * (M_dft * ε_fwd + ε_fwd * M_dft) + 2 * ε_fwd * ε_fwd / 2^P + 1/2
-    -- Product magnitude
-    let M_prod := M_dft * M_dft
-    -- Inverse FFT error
-    let ε_inv := (ε_cmul + 2 * M_prod + 1) * 3^n
-    ε_inv < (K : ℝ) * 2^(P - 1) := by
-  unfold knuth_bound;
-  norm_num [ Nat.add_sub_assoc ] ; rcases l with ( _ | l ) <;> norm_num [ Nat.mul_succ, pow_succ', pow_mul ] at *;
-  field_simp;
-  norm_cast ; ring_nf;
-  norm_num [ pow_mul', ← mul_pow ];
-  induction' n with n ih <;> norm_num [ pow_succ' ] at *;
-  rcases n with ( _ | n ) <;> norm_num [ pow_succ' ] at *;
-  · nlinarith [ pow_pos ( by decide : 0 < 2 ) l, pow_le_pow_left' ( by decide : 2 ≤ 4 ) l, pow_le_pow_left' ( by decide : 4 ≤ 8 ) l, pow_le_pow_left' ( by decide : 8 ≤ 16 ) l ];
-  · grind +qlia
-
-/-
 Component bound for gen_dft with real inputs (im = 0)
 -/
 lemma gen_dft_real_component_bound (K : ℕ) (hK : K ≥ 1) (x : Fin K → ℂ)
@@ -906,7 +907,13 @@ lemma gen_dft_complex_component_bound (K : ℕ) (hK : K ≥ 1) (x : Fin K → �
     · exact le_trans ( Finset.sum_le_sum fun _ _ => hx _ ) ( by norm_num );
   exact ⟨ le_trans ( Complex.abs_re_le_norm _ ) h_sum_bound, le_trans ( Complex.abs_im_le_norm _ ) h_sum_bound ⟩
 
-/- Dead code: `fft_error_vs_gen_dft` depended on the removed `fft_error_bound`. -/
+/-
+Inverse gen_dft equals K * idft
+-/
+lemma gen_dft_true_eq_K_idft (K : ℕ) (hK : K ≥ 2) (x : Fin K → ℂ) (m : Fin K) :
+    gen_dft K x true m = (K : ℂ) * idft K x m := by
+  unfold gen_dft idft; simp +decide [ mul_comm, mul_assoc, mul_left_comm, Finset.mul_sum ] ; ring;
+  exact Finset.sum_congr rfl fun _ _ => by rw [ mul_inv_cancel_right₀ ( by norm_cast; linarith ) ] ; ring;
 
 /-
 The gen_dft pipeline gives K * circular convolution (no exact_fft needed).
@@ -920,7 +927,7 @@ lemma gen_dft_pipeline_eq_conv (K : ℕ) (hK : K ≥ 2)
       (↑K : ℂ) * ↑(∑ j : Fin K, ∑ k : Fin K,
         if (j.val + k.val) % K = m.val then A_digits j * B_digits k else 0) := by
   have h_shift : ∀ m : Fin K, gen_dft K (fun i => gen_dft K (fun j => (A_digits j : ℂ)) false i * gen_dft K (fun j => (B_digits j : ℂ)) false i) true m = K * idft K (fun i => gen_dft K (fun j => (A_digits j : ℂ)) false i * gen_dft K (fun j => (B_digits j : ℂ)) false i) m := by
-    exact?;
+    exact fun m => gen_dft_true_eq_K_idft K hK _ m;
   have h_idft : ∀ m : Fin K, idft K (fun i => gen_dft K (fun j => (A_digits j : ℂ)) false i * gen_dft K (fun j => (B_digits j : ℂ)) false i) m = circular_conv K (fun j => (A_digits j : ℂ)) (fun j => (B_digits j : ℂ)) m := by
     intro m
     have h_idft : idft K (fun i => gen_dft K (fun j => (A_digits j : ℂ)) false i * gen_dft K (fun j => (B_digits j : ℂ)) false i) m = idft K (fun i => gen_dft K (circular_conv K (fun j => (A_digits j : ℂ)) (fun j => (B_digits j : ℂ))) false i) m := by
@@ -929,6 +936,31 @@ lemma gen_dft_pipeline_eq_conv (K : ℕ) (hK : K ≥ 2)
     have := idft_dft K hK ( fun j => circular_conv K ( fun j => ( A_digits j : ℂ ) ) ( fun j => ( B_digits j : ℂ ) ) j ) m; aesop;
   simp_all +decide [ circular_conv ]
 
+end
+
+end FFTError
+
+
+/- ========================================================================
+   Section: FFTErrorInduction
+   ======================================================================== -/
+
+section FFTErrorInduction
+
+/-!
+# FFT Error Bound - Inductive proof
+
+This file contains the inductive proof of `fft_error_bound`, which shows that
+the fixed-point FFT approximates the generalized DFT with error ≤ (ε₀ + 2M + 1) * 3^k.
+
+The proof proceeds by strong induction on the number of butterfly levels k.
+-/
+
+open Complex Finset
+
+noncomputable section
+
+/-! ## Part 1: Twiddle factor properties -/
 
 /-- |round(x) - x| ≤ 1/2 for any real x -/
 lemma abs_round_sub_le (x : ℝ) : |(round x : ℝ) - x| ≤ 1/2 := by
@@ -946,10 +978,6 @@ lemma twiddle_approx_im (j K : ℕ) (inv : Bool) (P : ℕ) :
     |(↑(FPComplex.twiddle j K inv P).im : ℝ) - Real.sin θ * 2^P| ≤ 1/2 := by
   simp only [FPComplex.twiddle]
   exact abs_round_sub_le _
-
-/-- Cosine and sine are bounded by 1. -/
-lemma cos_abs_le_one (θ : ℝ) : |Real.cos θ| ≤ 1 := Real.abs_cos_le_one θ
-lemma sin_abs_le_one (θ : ℝ) : |Real.sin θ| ≤ 1 := Real.abs_sin_le_one θ
 
 /-! ## Part 2: FPComplex.fft unfolding for butterfly step -/
 
@@ -1076,12 +1104,6 @@ lemma butterfly_error_hi (K : ℕ) (P : ℕ) (hK : K ≥ 1) (hP : P ≥ 1)
     · positivity
 
 /-! ## Part 6: Error recurrence closes -/
-
-lemma error_recurrence_bound (ε₀ M : ℝ) (k : ℕ) (K : ℕ)
-    (hε : ε₀ ≥ 0) (hM : M ≥ 0) (hK : K = 2^k)
-    (ε : ℝ) (hε_bound : ε ≤ (ε₀ + 2 * M + 1/2) * 3^k - 2 * M * 2^k - 1/2) :
-    3 * ε + 2 * K * M + 1 ≤ (ε₀ + 2 * M + 1/2) * 3^(k+1) - 2 * M * 2^(k+1) - 1/2 := by
-  norm_num [ hK, pow_succ' ] ; linarith
 
 /-- Omega power components are bounded by 1 (on the unit circle). -/
 lemma omega_pow_component_bound (K j : ℕ) (hK : K ≥ 1) (inv : Bool) :
@@ -1358,13 +1380,35 @@ lemma fft_error_bound' (k : ℕ) (P : ℕ) (hP : P ≥ 1)
   have h := fft_error_bound_tight k P hP x inv x_exact ε₀ M hε hM h_approx h_mag h_prec i
   exact ⟨le_trans h.1 (G_bound_le ε₀ M hM k), le_trans h.2 (G_bound_le ε₀ M hM k)⟩
 
+end
+
+end FFTErrorInduction
+
+
+/- ========================================================================
+   Section: FFTErrorNPC
+   ======================================================================== -/
+
+section FFTErrorNPC
+
+/-!
+# FFT Error Bound Without Precision Condition
+
+This file provides a version of the FFT error bound that does not require the
+precision condition `(ε₀ + 2*M + 1)*3^k ≤ 2^(P-1)`.
+
+The bound is `(ε₀ + 2*M + 1) * (3 + 1/2^P)^k`.
+-/
+
+open Complex Finset
+
+noncomputable section
+
+/-! ## NPC bound function -/
 
 /-- The inductive invariant for the NPC error analysis. -/
 def G_npc (ε₀ M : ℝ) (P : ℕ) (k : ℕ) : ℝ :=
   (ε₀ + 2*M + 1)*(3+1/(2:ℝ)^P)^k - (2*M+1/2)*2^k
-
-lemma G_npc_zero (ε₀ M : ℝ) (P : ℕ) : G_npc ε₀ M P 0 = ε₀ + 1/2 := by
-  simp [G_npc]; ring
 
 lemma G_npc_le (ε₀ M : ℝ) (P : ℕ) (hM : M ≥ 0) (k : ℕ) :
     G_npc ε₀ M P k ≤ (ε₀ + 2*M + 1) * (3 + 1/(2:ℝ)^P)^k := by
@@ -1609,7 +1653,7 @@ lemma fft_error_bound_npc (k : ℕ) (P : ℕ) (hP : P ≥ 1)
 /-! ## Pipeline bound -/
 
 lemma pipeline_numerical_bound_npc (n l : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) :
-    let P := knuth_bound n l
+    let P := precision_bound n l
     let K := 2^n
     let ε_fwd := (2 * (2 : ℝ)^l + 1) * 3^n
     let M_dft := (K : ℝ) * 2^l
@@ -1617,7 +1661,7 @@ lemma pipeline_numerical_bound_npc (n l : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) :
     let M_prod := M_dft * M_dft
     let ε_inv := (ε_cmul + 2 * M_prod + 1) * (3 + 1/(2:ℝ)^P)^n
     ε_inv < (K : ℝ) * 2^(P - 1) := by
-  unfold knuth_bound at *
+  unfold precision_bound at *
   have h_bound : (3 + 1 / (2 : ℝ) ^ (4 * n + 2 * l + 4)) ^ n ≤ (3 + 1 / 16) ^ n := by
     gcongr
     exact le_trans ( by norm_num ) ( pow_le_pow_right₀ ( by norm_num ) ( Nat.add_le_add ( Nat.add_le_add ( Nat.mul_le_mul_left 4 hn ) ( Nat.mul_le_mul_left 2 hl ) ) le_rfl ) )
@@ -1633,6 +1677,20 @@ lemma pipeline_numerical_bound_npc (n l : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) :
       norm_num [ pow_mul', ← mul_pow ] at *
       nlinarith [ show 0 < ( 1 / 16 : ℝ ) ^ k * ( 1 / 4 ) ^ l * 2 ^ l * 9 ^ k * ( 49 / 16 ) ^ k by positivity, show 0 < ( 1 / 16 : ℝ ) ^ k * ( 1 / 4 ) ^ l * 4 ^ l * 9 ^ k * ( 49 / 16 ) ^ k by positivity, show 0 < ( 1 / 16 : ℝ ) ^ k * ( 1 / 4 ) ^ l * 9 ^ k * ( 49 / 16 ) ^ k by positivity, show 0 < ( 2 : ℝ ) ^ k * 2 ^ l * 3 ^ k * ( 49 / 16 ) ^ k by positivity, show 0 < ( 2 : ℝ ) ^ k * 4 ^ l * 3 ^ k * ( 49 / 16 ) ^ k by positivity, show 0 < ( 4 : ℝ ) ^ k * 4 ^ l * ( 49 / 16 ) ^ k by positivity, show 0 < ( 49 / 16 : ℝ ) ^ k by positivity ]
 
+end
+
+end FFTErrorNPC
+
+
+/- ========================================================================
+   Section: FFTConv
+   ======================================================================== -/
+
+section FFTConv
+
+open Complex Finset
+
+noncomputable section
 
 /-! ## Section 1: Rounding correctness -/
 
@@ -1681,43 +1739,21 @@ lemma rounding_pipeline_correct (C_re : ℤ) (conv_m : ℤ)
 
 /-! ## Section 4: Pipeline error bound helpers -/
 
-lemma fwd_fft_prec (n l P : ℕ) (hn : n ≥ 1) (_hl : l ≥ 1) (hP : P = knuth_bound n l) :
+lemma fwd_fft_prec (n l P : ℕ) (hn : n ≥ 1) (_hl : l ≥ 1) (hP : P = precision_bound n l) :
     (0 + 2 * (2 : ℝ)^l + 1) * 3^n ≤ 2^(P - 1) := by
   have h3n_le_22n : (3 : ℝ) ^ n ≤ 2 ^ (2 * n) := by rw [ pow_mul ] ; gcongr ; norm_num
   have h_sub : (2 * 2^l + 1) * (3 : ℝ) ^ n ≤ 2 ^ (4 * n + 2 * l + 3) := by
     refine le_trans ( mul_le_mul_of_nonneg_left h3n_le_22n <| by positivity ) ?_
     ring_nf at * ; norm_cast at * ; norm_num at *
     nlinarith [ pow_pos ( zero_lt_two' ℕ ) l, pow_le_pow_right₀ ( show 1 ≤ 2 by norm_num ) ( show l ≤ l * 2 by linarith ), pow_pos ( zero_lt_two' ℕ ) ( n * 2 ), pow_le_pow_right₀ ( show 1 ≤ 2 by norm_num ) ( show n * 2 ≤ n * 4 by linarith ), pow_pos ( zero_lt_two' ℕ ) ( n * 4 ), pow_le_pow_right₀ ( show 1 ≤ 2 by norm_num ) ( show n * 4 ≥ n * 2 by linarith ) ]
-  unfold knuth_bound at * ; norm_cast at * ; simp_all +decide [ Nat.mul_succ, pow_succ' ]
-
-lemma pipeline_numerical_bound' (n l : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) :
-    let P := knuth_bound n l
-    let K := 2^n
-    let ε_fwd := (2 * (2 : ℝ)^l + 1) * 3^n
-    let M_dft := (K : ℝ) * 2^l
-    let ε_cmul := 2 * (M_dft * ε_fwd + ε_fwd * M_dft) + 2 * ε_fwd * ε_fwd / 2^P + 1/2
-    let M_prod := M_dft * M_dft
-    let ε_inv := (ε_cmul + 2 * M_prod + 1) * 3^n
-    ε_inv < (K : ℝ) * 2^(P - 1) := by
-  simp +decide [ knuth_bound ] at *
-  field_simp; norm_cast ; ring_nf
-  norm_num [ pow_mul', ← mul_pow ] at *
-  induction' hn with n hn ih <;> norm_num [ pow_succ', mul_assoc ] at *
-  · linarith [ pow_pos ( by decide : 0 < 2 ) l, pow_le_pow_left' ( by decide : 2 ≤ 4 ) l, pow_le_pow_left' ( by decide : 4 ≤ 8 ) l, pow_le_pow_left' ( by decide : 8 ≤ 16 ) l, pow_pos ( by decide : 0 < 4 ) l, pow_pos ( by decide : 0 < 8 ) l, pow_pos ( by decide : 0 < 16 ) l ]
-  · lia
-
-lemma complex_mul_component_bound (α β : ℂ) (Ma Mb : ℝ)
-    (ha_re : |α.re| ≤ Ma) (ha_im : |α.im| ≤ Ma)
-    (hb_re : |β.re| ≤ Mb) (hb_im : |β.im| ≤ Mb) :
-    |(α * β).re| ≤ 2 * Ma * Mb ∧ |(α * β).im| ≤ 2 * Ma * Mb := by
-  constructor <;> rw [ abs_le ] <;> constructor <;> norm_num [ Complex.mul_re, Complex.mul_im ] <;> nlinarith [ abs_le.mp ha_re, abs_le.mp ha_im, abs_le.mp hb_re, abs_le.mp hb_im ]
+  unfold precision_bound at * ; norm_cast at * ; simp_all +decide [ Nat.mul_succ, pow_succ' ]
 
 /-! ## Section 5: Forward FFT error for digit inputs -/
 
 /-
 The forward FFT on integer digit inputs approximates the gen_dft with error (2*2^l+1)*3^n.
 -/
-lemma fwd_fft_digit_error (n l P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = knuth_bound n l)
+lemma fwd_fft_digit_error (n l P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = precision_bound n l)
     (D : Fin (2^n) → ℤ) (hD : ∀ j, |D j| < 2^l)
     (X : Vector (FPComplex P) (2^n))
     (hX : X = Vector.ofFn fun i => FPComplex.ofInt (D i)) :
@@ -1726,7 +1762,7 @@ lemma fwd_fft_digit_error (n l P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = 
     ∀ i : Fin (2^n),
       |(↑(X_hat.get i).re : ℝ) - (gen_dft (2^n) D_exact false i).re * 2^P| ≤ (2 * (2:ℝ)^l + 1) * 3^n ∧
       |(↑(X_hat.get i).im : ℝ) - (gen_dft (2^n) D_exact false i).im * 2^P| ≤ (2 * (2:ℝ)^l + 1) * 3^n := by
-  convert fft_error_bound' n P ( by linarith [ show knuth_bound n l ≥ 1 by exact Nat.succ_le_of_lt ( by unfold knuth_bound; linarith ) ] ) X false ( fun i => ( D i : ℂ ) ) 0 ( 2 ^ l ) ( by linarith ) ( by linarith [ pow_pos ( by linarith : 0 < ( 2 : ℝ ) ) l ] ) _ _ ( fwd_fft_prec n l P hn hl hP ) using 1;
+  convert fft_error_bound' n P ( by linarith [ show precision_bound n l ≥ 1 by exact Nat.succ_le_of_lt ( by unfold precision_bound; linarith ) ] ) X false ( fun i => ( D i : ℂ ) ) 0 ( 2 ^ l ) ( by linarith ) ( by linarith [ pow_pos ( by linarith : 0 < ( 2 : ℝ ) ) l ] ) _ _ ( fwd_fft_prec n l P hn hl hP ) using 1;
   · norm_num;
   · simp [hX, FPComplex.ofInt];
   · norm_num [ abs_le ];
@@ -1775,7 +1811,7 @@ lemma product_component_bound_via_norm (α β : ℂ) (Ma Mb : ℝ)
 /-
 Pointwise cmul error: C_hat[i] approximates the exact product.
 -/
-lemma cmul_pointwise_error (n l P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = knuth_bound n l)
+lemma cmul_pointwise_error (n l P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = precision_bound n l)
     (A_digits B_digits : Fin (2^n) → ℤ)
     (hA_bound : ∀ j, |A_digits j| < 2^l)
     (hB_bound : ∀ j, |B_digits j| < 2^l)
@@ -1801,7 +1837,7 @@ lemma cmul_pointwise_error (n l P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P =
   have hB : |(B_hat.get i).re - (gen_dft (2^n) (fun j => (B_digits j : ℂ)) false i).re * 2^P| ≤ ε_fwd ∧ |(B_hat.get i).im - (gen_dft (2^n) (fun j => (B_digits j : ℂ)) false i).im * 2^P| ≤ ε_fwd := by
     exact hB_err i;
   have := cmul_error_bound P ( by
-    exact hP.symm ▸ by unfold knuth_bound; linarith; ) ( A_hat.get i ) ( B_hat.get i ) ( gen_dft ( 2^n ) ( fun j => ( A_digits j : ℂ ) ) false i ) ( gen_dft ( 2^n ) ( fun j => ( B_digits j : ℂ ) ) false i ) ε_fwd ε_fwd ( 2^n * 2^l ) ( 2^n * 2^l ) ( by positivity ) ( by positivity ) ( by positivity ) ( by positivity ) hA.1 hA.2 hB.1 hB.2 ( by
+    exact hP.symm ▸ by unfold precision_bound; linarith; ) ( A_hat.get i ) ( B_hat.get i ) ( gen_dft ( 2^n ) ( fun j => ( A_digits j : ℂ ) ) false i ) ( gen_dft ( 2^n ) ( fun j => ( B_digits j : ℂ ) ) false i ) ε_fwd ε_fwd ( 2^n * 2^l ) ( 2^n * 2^l ) ( by positivity ) ( by positivity ) ( by positivity ) ( by positivity ) hA.1 hA.2 hB.1 hB.2 ( by
     convert gen_dft_real_component_bound ( 2 ^ n ) ( by linarith [ Nat.pow_le_pow_right two_pos hn ] ) ( fun j => ( A_digits j : ℂ ) ) ( 2 ^ l ) ( by positivity ) ( fun j => ?_ ) ( fun j => ?_ ) false i |>.1 using 1 <;> norm_num [ abs_mul, abs_of_nonneg ];
     exact_mod_cast le_of_lt ( hA_bound j ) ) ( by
     convert gen_dft_real_component_bound ( 2 ^ n ) ( by linarith [ Nat.pow_le_pow_right two_pos hn ] ) ( fun j => ( A_digits j : ℂ ) ) ( 2 ^ l ) ( by positivity ) ( fun j => ?_ ) ( fun j => ?_ ) false i |>.2 using 1 <;> norm_num [ abs_mul, abs_of_nonneg ];
@@ -1840,7 +1876,7 @@ lemma exact_product_mag_bound (n l : ℕ) (hn : n ≥ 1) (hl : l ≥ 1)
 The full pipeline ℝ-valued error bound.
 -/
 lemma fft_pipeline_real_error
-    (n l P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = knuth_bound n l)
+    (n l P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = precision_bound n l)
     (A_digits B_digits : Fin (2^n) → ℤ)
     (hA_bound : ∀ j, |A_digits j| < 2^l)
     (hB_bound : ∀ j, |B_digits j| < 2^l)
@@ -1907,7 +1943,7 @@ lemma fft_pipeline_real_error
 The core error bound: the FFT pipeline output is within K * 2^(P-1) of K * conv * 2^P.
 -/
 lemma fft_pipeline_error_bound
-    (n l : ℕ) (P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = knuth_bound n l)
+    (n l : ℕ) (P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = precision_bound n l)
     (A_digits B_digits : Fin (2^n) → ℤ)
     (hA_bound : ∀ j, |A_digits j| < 2^l)
     (hB_bound : ∀ j, |B_digits j| < 2^l)
@@ -1933,7 +1969,33 @@ lemma fft_pipeline_error_bound
   convert this n l P hn hl hP A_digits B_digits hA_bound hB_bound A B hA hB A_hat hA_hat B_hat hB_hat C_hat hC_hat C hC using 1;
   norm_cast
 
+end
+
+end FFTConv
+
+
+/- ========================================================================
+   Section: SSATermination
+   ======================================================================== -/
+
+section SSATermination
+
+/-!
+# Termination proof for SSA multiplication
+
+This file proves that the FFT output components are strictly smaller
+than the inputs, which ensures termination of the SSA algorithm.
+
+## Strategy
+
+1. Prove tight shr_round bound: |shr_round v P| ≤ |v| / 2^P + 1
+2. Prove cmul with twiddle factor gives ≤ 3B + 1
+3. Prove FFT component bound by induction: output ≤ 4^k * (M+1) - 1
+4. Instantiate to show FFT outputs < 2^(6n+3l+5) < a.natAbs
+-/
+
 namespace FPComplex
+
 variable {P : ℕ}
 
 /-! ## Tight shr_round bound -/
@@ -2081,25 +2143,9 @@ end FPComplex
 /-! ## Auxiliary arithmetic lemmas -/
 
 /-
-3^n < 2^(2n+3l+5) for all n, l with l ≥ 1.
-    This is the key inequality ensuring FFT outputs are smaller than inputs.
--/
-lemma pow3_lt_pow2 (n l : ℕ) (hl : l ≥ 1) : 3^n < 2^(2*n + 3*l + 5) := by
-  -- Since $3^n \leq 4^n$ and $4^n = 2^{2n}$, we have $3^n \leq 2^{2n}$.
-  have h3n_le_2n : 3^n ≤ 2^(2*n) := by
-    rw [ pow_mul ] ; gcongr ; norm_num;
-  exact lt_of_le_of_lt h3n_le_2n ( pow_lt_pow_right₀ ( by decide ) ( by linarith ) )
-
-/-
-4^n * (M+1) ≤ 2^(2n) * (M+1)
--/
-lemma pow4_eq_pow2_sq (n : ℕ) : 4^n = 2^(2*n) := by
-  norm_num [ pow_mul ]
-
-/-
 The FFT output of digit decomposition has bounded components.
 -/
-lemma fft_digit_output_bound (n l P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = knuth_bound n l)
+lemma fft_digit_output_bound (n l P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = precision_bound n l)
     (x : ℕ) (N : ℕ) (hx : x < 2^N) (hlK : l * 2^n ≥ 2 * N)
     (inv : Bool) :
     let K := 2^n
@@ -2120,76 +2166,25 @@ lemma fft_digit_output_bound (n l P : ℕ) (hn : n ≥ 1) (hl : l ≥ 1) (hP : P
     unfold FPComplex.ofInt; norm_num [ Int.natAbs_mul ] ;
     exact Nat.le_sub_one_of_lt ( by linarith [ abs_of_nonneg ( show 0 ≤ decompose_digit x l ( 2 ^ n ) i from decompose_digit_nonneg x l ( 2 ^ n ) i ) ] );
   have := @FPComplex.fft_component_bound n P ?_ A inv ( ( 2 ^ l - 1 ) * 2 ^ P ) hA_bound;
-  · refine fun i => ⟨ lt_of_le_of_lt ( this i |>.1 ) ?_, lt_of_le_of_lt ( this i |>.2 ) ?_ ⟩ <;> norm_num [ hP, knuth_bound ] <;> ring_nf;
+  · refine fun i => ⟨ lt_of_le_of_lt ( this i |>.1 ) ?_, lt_of_le_of_lt ( this i |>.2 ) ?_ ⟩ <;> norm_num [ hP, precision_bound ] <;> ring_nf;
     · rw [ show ( 4 : ℕ ) ^ n = 2 ^ ( n * 2 ) by norm_num [ pow_mul' ] ] ; ring_nf;
       zify ; norm_num ; ring_nf ; (
       nlinarith [ pow_pos ( by decide : 0 < 2 ) ( l * 2 ), pow_pos ( by decide : 0 < 2 ) ( n * 6 ), pow_pos ( by decide : 0 < 2 ) ( l * 3 ), pow_pos ( by decide : 0 < 2 ) ( n * 2 ), pow_le_pow_right₀ ( by decide : 1 ≤ 2 ) ( by linarith : l * 2 ≤ l * 3 ), pow_le_pow_right₀ ( by decide : 1 ≤ 2 ) ( by linarith : n * 2 ≤ n * 6 ) ]);
     · rw [ show ( 4 : ℕ ) ^ n = 2 ^ ( n * 2 ) by norm_num [ pow_mul' ] ] ; ring_nf;
       zify ; norm_num ; ring_nf ; (
       nlinarith [ pow_pos ( by decide : 0 < 2 ) ( l * 2 ), pow_pos ( by decide : 0 < 2 ) ( n * 6 ), pow_pos ( by decide : 0 < 2 ) ( l * 3 ), pow_pos ( by decide : 0 < 2 ) ( n * 2 ), pow_le_pow_right₀ ( by decide : 1 ≤ 2 ) ( by linarith : l * 2 ≤ l * 3 ), pow_le_pow_right₀ ( by decide : 1 ≤ 2 ) ( by linarith : n * 2 ≤ n * 6 ) ]);
-  · exact hP.symm ▸ Nat.succ_le_of_lt ( by unfold knuth_bound; positivity )
-/-! ## FFT output bound (uses SSATermination results) -/
+  · exact hP.symm ▸ Nat.succ_le_of_lt ( by unfold precision_bound; positivity )
 
-/-
-The FFT output components have strictly smaller natAbs sum than the inputs.
-    Used for both termination and the induction hypothesis.
--/
-lemma fft_output_natAbs_bound (a b : ℤ)
-    (hN : max (bits a) (bits b) > base_threshold) :
-    let N := max (bits a) (bits b)
-    let n := Classical.choose (exist_n_l N hN)
-    let hl := Classical.choose_spec (exist_n_l N hN)
-    let l := Classical.choose hl
-    let K := 2 ^ n
-    let P := knuth_bound n l
-    let A : Vector (FPComplex P) K :=
-      Vector.ofFn fun i : Fin K => FPComplex.ofInt (decompose_digit a.natAbs l K i.val)
-    let B : Vector (FPComplex P) K :=
-      Vector.ofFn fun i : Fin K => FPComplex.ofInt (decompose_digit b.natAbs l K i.val)
-    let A_hat := FPComplex.fft (k := n) A false
-    let B_hat := FPComplex.fft (k := n) B false
-    ∀ i : Fin K,
-      (A_hat.get i).re.natAbs + (B_hat.get i).re.natAbs
-        < a.natAbs + b.natAbs ∧
-      (A_hat.get i).im.natAbs + (B_hat.get i).im.natAbs
-        < a.natAbs + b.natAbs ∧
-      (A_hat.get i).re.natAbs + (B_hat.get i).im.natAbs
-        < a.natAbs + b.natAbs ∧
-      (A_hat.get i).im.natAbs + (B_hat.get i).re.natAbs
-        < a.natAbs + b.natAbs := by
-  intro N n hl l K P A B A_hat B_hat i;
-  -- Apply fft_digit_output_bound to get the bounds on the FFT outputs.
-  have hA_hat : ∀ i : Fin K, (A_hat.get i).re.natAbs < 2 ^ (6 * n + 3 * l + 5) ∧ (A_hat.get i).im.natAbs < 2 ^ (6 * n + 3 * l + 5) := by
-    apply fft_digit_output_bound;
-    exact Classical.choose_spec ( exist_n_l N hN ) |> Classical.choose_spec |> And.right |> And.left;
-    exact Classical.choose_spec hl |>.2.2.1;
-    grind;
-    any_goals exact hl.choose_spec.1;
-    have hA_hat : a.natAbs < 2 ^ (bits a) := by
-      exact Nat.lt_pow_succ_log_self ( by decide ) _;
-    exact hA_hat.trans_le ( pow_le_pow_right₀ ( by decide ) ( le_max_left _ _ ) )
-  have hB_hat : ∀ i : Fin K, (B_hat.get i).re.natAbs < 2 ^ (6 * n + 3 * l + 5) ∧ (B_hat.get i).im.natAbs < 2 ^ (6 * n + 3 * l + 5) := by
-    convert fft_digit_output_bound n l P ( Classical.choose_spec ( exist_n_l N hN ) |>.choose_spec.2.1 ) ( Classical.choose_spec ( exist_n_l N hN ) |>.choose_spec.2.2.1 ) rfl ( Int.natAbs b ) N _ _ _ using 1;
-    · refine' lt_of_lt_of_le _ ( pow_le_pow_right₀ ( by decide ) ( show N ≥ bits b from le_max_right _ _ ) );
-      exact Nat.lt_pow_succ_log_self ( by decide ) _;
-    · exact Classical.choose_spec hl |>.1;
-  -- Since $N = \max(\text{bits } a, \text{bits } b)$, we have $a.natAbs + b.natAbs \geq 2^{N-1}$.
-  have h_sum_bound : a.natAbs + b.natAbs ≥ 2 ^ (N - 1) := by
-    have h_sum_bound : a.natAbs ≥ 2 ^ (N - 1) ∨ b.natAbs ≥ 2 ^ (N - 1) := by
-      have h_sum_bound : bits a ≥ N ∨ bits b ≥ N := by
-        grind;
-      exact Or.imp ( fun h => natAbs_ge_of_bits_ge a N ( by linarith [ show N ≥ 2 by exact le_trans ( by decide ) hN.le ] ) h ) ( fun h => natAbs_ge_of_bits_ge b N ( by linarith [ show N ≥ 2 by exact le_trans ( by decide ) hN.le ] ) h ) h_sum_bound;
-    grind +extAll;
-  -- Since $N \geq 2*(3*n + 3*l + 5)$, we have $N - 1 \geq 6*n + 6*l + 9$.
-  have hN_minus_1 : N - 1 ≥ 6 * n + 6 * l + 9 := by
-    grind;
-  -- Since $2^{6*n + 6*l + 9} > 2^{6*n + 3*l + 6}$, we have $a.natAbs + b.natAbs > 2^{6*n + 3*l + 6}$.
-  have h_final_bound : a.natAbs + b.natAbs > 2 ^ (6 * n + 3 * l + 6) := by
-    exact lt_of_lt_of_le ( pow_lt_pow_right₀ ( by decide ) ( by linarith ) ) h_sum_bound;
-  grind
+end SSATermination
+
+
+/- ========================================================================
+   Section: SSAMain
+   ======================================================================== -/
+
+section SSAMain
 
 /-! ## The SSA multiplication algorithm -/
-
 noncomputable def ssa : ℤ → ℤ → ℤ
   | a, b =>
     let N := max (bits a) (bits b)
@@ -2198,35 +2193,40 @@ noncomputable def ssa : ℤ → ℤ → ℤ
       let x := a.natAbs
       let y := b.natAbs
 
-      let n := Classical.choose (exist_n_l N hN)
-      let hl := Classical.choose_spec (exist_n_l N hN)
-      let l := Classical.choose hl
+      let l := Nat.clog 2 N
+      let n := Nat.clog 2 ((2 * N + l - 1) / l)
 
       let K := 2 ^ n
-      let P := knuth_bound n l
+      let P := precision_bound n l
       let A : Vector (FPComplex P) K :=
         Vector.ofFn fun i : Fin K => FPComplex.ofInt (decompose_digit x l K i.val)
       let B : Vector (FPComplex P) K :=
         Vector.ofFn fun i : Fin K => FPComplex.ofInt (decompose_digit y l K i.val)
-      let A_hat := FPComplex.fft (k := n) A false
-      let B_hat := FPComplex.fft (k := n) B false
+
+      -- all integer multiplications go through this function;
+      -- it enables us to perform the twiddle muls in the FFTs via recursive calls to ssa,
+      -- which is how the O(N lg N lg lg N lg lg lg N ...) complexity is achieved.
+      let mul_fn : ℤ → ℤ → ℤ := fun u v =>
+        -- note from srihari (that is, not from aristotle):
+        -- this guard is always vacuously true, i.e. all submuls are of smaller size.
+        -- (machine-checked this fact.)
+        -- but the termination checker won't let us just use ssa directly,
+        -- as it cannot see inside the FFT. so we have to include the guard
+        -- to prove termination.
+        if u.natAbs + v.natAbs < a.natAbs + b.natAbs then ssa u v else u * v
+
+      let A_hat := FPComplex.FFT mul_fn (k := n) A false
+      let B_hat := FPComplex.FFT mul_fn (k := n) B false
       let C_hat : Vector (FPComplex P) K := Vector.ofFn fun i : Fin K =>
-        ⟨FPComplex.shr_round (ssa (A_hat[i.val]'(by grind)).re (B_hat[i.val]'(by grind)).re -
-                              ssa (A_hat[i.val]'(by grind)).im (B_hat[i.val]'(by grind)).im) P,
-         FPComplex.shr_round (ssa (A_hat[i.val]'(by grind)).re (B_hat[i.val]'(by grind)).im +
-                              ssa (A_hat[i.val]'(by grind)).im (B_hat[i.val]'(by grind)).re) P⟩
-      let C := FPComplex.fft (k := n) C_hat true
+        FPComplex.cmul_via mul_fn (A_hat.get i) (B_hat.get i)
+      let C := FPComplex.FFT mul_fn (k := n) C_hat true
       let coeff : Fin K → ℤ := fun j =>
-        FPComplex.round_re (⟨(C[j.val]'(by grind)).re / K,
-          (C[j.val]'(by grind)).im / K⟩ : FPComplex P)
+        FPComplex.round_re (⟨(C.get j).re / (↑K : ℤ),
+          (C.get j).im / (↑K : ℤ)⟩ : FPComplex P)
       sgn * recompose l coeff
     else a * b
 termination_by a b => a.natAbs + b.natAbs
-decreasing_by
-  all_goals
-    have bound := fft_output_natAbs_bound a b hN i
-    obtain ⟨h1, h2, h3, h4⟩ := bound
-    first | exact h1 | exact h2 | exact h3 | exact h4
+decreasing_by all_goals assumption
 
 /-! ## FFT convolution correctness -/
 
@@ -2238,7 +2238,7 @@ decreasing_by
     `rounding_pipeline_correct` (also from FFTConv.lean). -/
 lemma fft_convolution_correct
     {P : ℕ} (n l : ℕ)
-    (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = knuth_bound n l)
+    (hn : n ≥ 1) (hl : l ≥ 1) (hP : P = precision_bound n l)
     (A_digits B_digits : Fin (2^n) → ℤ)
     (hA_bound : ∀ j, |A_digits j| < 2^l)
     (hB_bound : ∀ j, |B_digits j| < 2^l)
@@ -2271,36 +2271,18 @@ lemma fft_convolution_correct
     FPComplex.round_re (P := P) ⟨(C.get m).re / (2^n : ℤ), 0⟩ := by
     simp [FPComplex.round_re]
   rw [h_re]
-  have hP_ge : P ≥ 1 := by unfold knuth_bound at hP; omega
+  have hP_ge : P ≥ 1 := by unfold precision_bound at hP; omega
   exact rounding_pipeline_correct _ conv_m (2^n) P
     (show 2^n ≥ 2 from le_trans (by norm_num : 2 ≤ 2^1) (Nat.pow_le_pow_right (by omega) hn)) hP_ge h_err
 
 /-! ## Helper lemmas for correctness -/
 
-/-
-When `ssa = *` on all relevant inputs, the SSA's C_hat vector equals cmul-based C_hat.
--/
-lemma ssa_vector_eq_cmul_vector {K P : ℕ} (A_hat B_hat : Vector (FPComplex P) K)
-    (hssa : ∀ i : Fin K,
-      ssa (A_hat.get i).re (B_hat.get i).re = (A_hat.get i).re * (B_hat.get i).re ∧
-      ssa (A_hat.get i).im (B_hat.get i).im = (A_hat.get i).im * (B_hat.get i).im ∧
-      ssa (A_hat.get i).re (B_hat.get i).im = (A_hat.get i).re * (B_hat.get i).im ∧
-      ssa (A_hat.get i).im (B_hat.get i).re = (A_hat.get i).im * (B_hat.get i).re) :
-    (Vector.ofFn fun i : Fin K =>
-      (⟨FPComplex.shr_round (ssa (A_hat.get i).re (B_hat.get i).re -
-                              ssa (A_hat.get i).im (B_hat.get i).im) P,
-       FPComplex.shr_round (ssa (A_hat.get i).re (B_hat.get i).im +
-                              ssa (A_hat.get i).im (B_hat.get i).re) P⟩ : FPComplex P)) =
-    Vector.ofFn fun i : Fin K => FPComplex.cmul (A_hat.get i) (B_hat.get i) := by
-  simp +decide only [hssa, FPComplex.cmul]
-
-/-
+/--
 The algebraic chain: given circular convolution equals coeff,
     the final result equals a * b.
 -/
 lemma ssa_algebraic_chain (a b : ℤ) (n l : ℕ) (K : ℕ) (hK : K = 2 ^ n)
     (hn : n ≥ 1) (hl : l ≥ 1) (hlK : l * K ≥ 2 * max (bits a) (bits b))
-    (_hN_bound : 2 * (3 * n + 3 * l + 5) ≤ max (bits a) (bits b))
     (coeff : Fin K → ℤ)
     (hcoeff : ∀ m : Fin K,
       coeff m = ∑ j : Fin K, ∑ k : Fin K,
@@ -2349,20 +2331,83 @@ lemma ssa_algebraic_chain (a b : ℤ) (n l : ℕ) (K : ℕ) (hK : K = 2 ^ n)
       · grind;
       · grind;
       · grind;
-  · convert decompose_digit_support a.natAbs l K ( max ( bits a ) ( bits b ) ) _ _ _ _ using 1;
-    · grind;
-    · exact lt_of_lt_of_le ( Nat.lt_pow_succ_log_self ( by decide ) _ ) ( Nat.pow_le_pow_right ( by decide ) ( Nat.le_max_left _ _ ) );
-    · linarith;
-    · grind;
-    · exact hK.symm ▸ Nat.le_self_pow ( by linarith ) _;
+  · convert decompose_digit_support a.natAbs l K ( max ( bits a ) ( bits b ) ) _ hlK hl ( by rw [ hK ] ; exact Nat.le_self_pow ( by linarith ) _ ) ( by rw [ hK ] ; exact dvd_pow_self _ ( by linarith ) ) using 1;
+    exact lt_of_lt_of_le ( Nat.lt_pow_succ_log_self ( by decide ) _ ) ( Nat.pow_le_pow_right ( by decide ) ( Nat.le_max_left _ _ ) );
   · convert decompose_digit_support b.natAbs l K ( max ( bits a ) ( bits b ) ) _ hlK hl ( by rw [ hK ] ; exact Nat.le_self_pow ( by linarith ) _ ) ( by rw [ hK ] ; exact dvd_pow_self _ ( by linarith ) ) using 1;
     unfold bits at *;
     exact Nat.lt_pow_of_log_lt ( by norm_num ) ( by omega )
 
+/-! ## Pipeline correctness -/
+
+/--
+The standard FFT pipeline (forward FFT → pointwise cmul → inverse FFT → rounding)
+    correctly computes `a * b`.
+
+    This is the core of the SSA correctness proof, factored out for reuse.
+-/
+lemma pipeline_correct (a b : ℤ) (hN : max (bits a) (bits b) > base_threshold) :
+    let N := max (bits a) (bits b)
+    let sgn : ℤ := a.sign * b.sign
+    let l := Nat.clog 2 N
+    let n := Nat.clog 2 ((2 * N + l - 1) / l)
+    let K := 2 ^ n
+    let P := precision_bound n l
+    let A : Vector (FPComplex P) K :=
+      Vector.ofFn fun i : Fin K => FPComplex.ofInt (decompose_digit a.natAbs l K i.val)
+    let B : Vector (FPComplex P) K :=
+      Vector.ofFn fun i : Fin K => FPComplex.ofInt (decompose_digit b.natAbs l K i.val)
+    let A_hat := FPComplex.fft (k := n) A false
+    let B_hat := FPComplex.fft (k := n) B false
+    let C_hat : Vector (FPComplex P) K := Vector.ofFn fun i : Fin K =>
+      FPComplex.cmul (A_hat.get i) (B_hat.get i)
+    let C := FPComplex.fft (k := n) C_hat true
+    let coeff : Fin K → ℤ := fun j =>
+      FPComplex.round_re (⟨(C.get j).re / (↑K : ℤ),
+        (C.get j).im / (↑K : ℤ)⟩ : FPComplex P)
+    sgn * recompose l coeff = a * b := by
+  intro N sgn l n K P A B A_hat B_hat C_hat C coeff
+  have hN' : 64 < N := hN
+  obtain ⟨hn, hl, hlK0, hlN⟩ := ssa_params N hN'
+  -- restate with the local `let` names `l`, `n` so `omega` sees matching atoms
+  have hlK : l * 2 ^ n ≥ 2 * N := hlK0
+  -- hn : n ≥ 1, hl : l ≥ 1, hlK : l * 2 ^ n ≥ 2 * N, hlN : l ≤ N
+  have ha_lt : a.natAbs < 2 ^ N := lt_of_lt_of_le (Nat.lt_pow_succ_log_self (by decide) _)
+    (Nat.pow_le_pow_right (by decide) (Nat.le_max_left _ _))
+  have hb_lt : b.natAbs < 2 ^ N := lt_of_lt_of_le (Nat.lt_pow_succ_log_self (by decide) _)
+    (Nat.pow_le_pow_right (by decide) (Nat.le_max_right _ _))
+  have hK2 : K ≥ 2 := by
+    show 2 ^ n ≥ 2
+    calc (2 : ℕ) = 2 ^ 1 := (pow_one 2).symm
+      _ ≤ 2 ^ n := Nat.pow_le_pow_right (by decide) hn
+  -- l * (K - 1) ≥ N, needed for the digit bound
+  have hlK1 : l * (K - 1) ≥ N := by
+    show l * (2 ^ n - 1) ≥ N
+    have : l * (2 ^ n - 1) = l * 2 ^ n - l := by rw [Nat.mul_sub, mul_one]
+    rw [this]; omega
+  have hAbound : ∀ j : Fin K, |decompose_digit a.natAbs l K j.val| < 2 ^ l := by
+    intro j
+    rw [abs_of_nonneg (decompose_digit_nonneg _ _ _ _)]
+    exact_mod_cast decompose_digit_bound_all a.natAbs l K N hl hK2 ha_lt hlK1 j.val j.2
+  have hBbound : ∀ j : Fin K, |decompose_digit b.natAbs l K j.val| < 2 ^ l := by
+    intro j
+    rw [abs_of_nonneg (decompose_digit_nonneg _ _ _ _)]
+    exact_mod_cast decompose_digit_bound_all b.natAbs l K N hl hK2 hb_lt hlK1 j.val j.2
+  apply ssa_algebraic_chain a b n l K rfl hn hl (by show l * 2 ^ n ≥ 2 * N; exact hlK) coeff
+  refine fft_convolution_correct n l hn hl rfl
+    (fun i => decompose_digit a.natAbs l K i.val)
+    (fun i => decompose_digit b.natAbs l K i.val)
+    hAbound hBbound A rfl B rfl A_hat rfl B_hat rfl C_hat rfl C rfl coeff ?_
+  funext j
+  show FPComplex.round_re (P := P) ⟨(C.get j).re / (↑K : ℤ), (C.get j).im / (↑K : ℤ)⟩
+     = FPComplex.round_re (P := P) ⟨(C.get j).re / ((2 : ℤ) ^ n), (C.get j).im / ((2 : ℤ) ^ n)⟩
+  rw [show (↑K : ℤ) = (2 : ℤ) ^ n from by rw [show K = 2 ^ n from rfl]; push_cast; ring]
+
 /-! ## Main correctness theorem -/
 
 /-- **Correctness of the SSA multiplication algorithm.**
-    The algorithm correctly computes the product of two integers. -/
+    The algorithm correctly computes the product of two integers.
+    All integer multiplications — including FFT butterfly products —
+    are performed via recursive `ssa` calls. -/
 theorem ssa_correct (a b : ℤ) : ssa a b = a * b := by
   suffices h : ∀ n : ℕ, ∀ a b : ℤ, a.natAbs + b.natAbs = n → ssa a b = a * b from
     h _ a b rfl
@@ -2374,76 +2419,24 @@ theorem ssa_correct (a b : ℤ) : ssa a b = a * b := by
     split
     · -- Inductive step: N > base_threshold
       rename_i hN
-      -- Use the IH to replace all ssa calls with multiplication
+      -- By IH, ssa = * on all smaller inputs
       have ih' : ∀ x y : ℤ, x.natAbs + y.natAbs < n → ssa x y = x * y :=
         fun x y h => ih (x.natAbs + y.natAbs) h x y rfl
-      have h_bound := fft_output_natAbs_bound a b hN
-      -- Step 1: Introduce named variables for the let chain
-      set N' := max (bits a) (bits b) with hN'_def
-      set nn := Classical.choose (exist_n_l N' hN) with hnn_def
-      set hl_ex := Classical.choose_spec (exist_n_l N' hN) with hhl_ex_def
-      set l := Classical.choose hl_ex with hl_def
-      set K := 2 ^ nn with hK_def
-      set P := knuth_bound nn l with hP_def
-      set A := (Vector.ofFn fun i : Fin K => FPComplex.ofInt (P := P) (decompose_digit a.natAbs l K i.val)) with hA_def
-      set B := (Vector.ofFn fun i : Fin K => FPComplex.ofInt (P := P) (decompose_digit b.natAbs l K i.val)) with hB_def
-      set A_hat := FPComplex.fft (k := nn) A false with hA_hat_def
-      set B_hat := FPComplex.fft (k := nn) B false with hB_hat_def
-      -- Get properties
-      have hprops := Classical.choose_spec hl_ex
-      have hlK : l * K ≥ 2 * N' := hprops.1
-      have hnn_ge : nn ≥ 1 := hprops.2.1
-      have hl_ge : l ≥ 1 := hprops.2.2.1
-      have _hN_bound : 2 * (3 * nn + 3 * l + 5) ≤ N' := hprops.2.2.2
-      -- Step 2: Show ssa calls equal products
-      have hssa_eq : ∀ i : Fin K,
-        ssa (A_hat.get i).re (B_hat.get i).re = (A_hat.get i).re * (B_hat.get i).re ∧
-        ssa (A_hat.get i).im (B_hat.get i).im = (A_hat.get i).im * (B_hat.get i).im ∧
-        ssa (A_hat.get i).re (B_hat.get i).im = (A_hat.get i).re * (B_hat.get i).im ∧
-        ssa (A_hat.get i).im (B_hat.get i).re = (A_hat.get i).im * (B_hat.get i).re := by
-        intro i; obtain ⟨h1, h2, h3, h4⟩ := h_bound i
-        exact ⟨ih' _ _ (hab ▸ h1), ih' _ _ (hab ▸ h2), ih' _ _ (hab ▸ h3), ih' _ _ (hab ▸ h4)⟩
-      -- Step 3: Use hC_hat_eq to rewrite
-      have hC_hat_eq := ssa_vector_eq_cmul_vector A_hat B_hat hssa_eq
-      -- Define the intermediate values
-      set C_hat_cmul := Vector.ofFn fun i : Fin K => FPComplex.cmul (A_hat.get i) (B_hat.get i) with hC_hat_cmul_def
-      set C_cmul := FPComplex.fft (k := nn) C_hat_cmul true with hC_cmul_def
-      set coeff_cmul : Fin K → ℤ := (fun j : Fin K => FPComplex.round_re (⟨(C_cmul.get j).re / (↑K : ℤ), (C_cmul.get j).im / (↑K : ℤ)⟩ : FPComplex P)) with hcoeff_cmul_def
-      -- Use fft_convolution_correct to get coeff = circular convolution
-      have hconv := fft_convolution_correct nn l hnn_ge hl_ge rfl
-        (fun j => decompose_digit a.natAbs l K j.val)
-        (fun j => decompose_digit b.natAbs l K j.val)
-        (by -- bound on A_digits
-          have hK_ge2 : K ≥ 2 := by
-            rw [hK_def]; exact le_trans (show 2 ≤ 2 ^ 1 by norm_num) (Nat.pow_le_pow_right (by norm_num) hnn_ge)
-          have ha_lt : a.natAbs < 2 ^ N' :=
-            lt_of_lt_of_le (Nat.lt_pow_succ_log_self (by norm_num) _) (Nat.pow_le_pow_right (by norm_num) (le_max_left _ _))
-          have hlK_sub : l * (K - 1) ≥ N' := by zify [show K ≥ 1 from by omega] at *; linarith
-          intro j; rw [abs_of_nonneg (by exact_mod_cast decompose_digit_nonneg a.natAbs l K j.val)]
-          exact_mod_cast decompose_digit_bound_all a.natAbs l K N' hl_ge hK_ge2 ha_lt hlK_sub j.val j.isLt)
-        (by -- bound on B_digits
-          have hK_ge2 : K ≥ 2 := by
-            rw [hK_def]; exact le_trans (show 2 ≤ 2 ^ 1 by norm_num) (Nat.pow_le_pow_right (by norm_num) hnn_ge)
-          have hb_lt : b.natAbs < 2 ^ N' :=
-            lt_of_lt_of_le (Nat.lt_pow_succ_log_self (by norm_num) _) (Nat.pow_le_pow_right (by norm_num) (le_max_right _ _))
-          have hlK_sub : l * (K - 1) ≥ N' := by zify [show K ≥ 1 from by omega] at *; linarith
-          intro j; rw [abs_of_nonneg (by exact_mod_cast decompose_digit_nonneg b.natAbs l K j.val)]
-          exact_mod_cast decompose_digit_bound_all b.natAbs l K N' hl_ge hK_ge2 hb_lt hlK_sub j.val j.isLt)
-        A hA_def B hB_def
-        A_hat hA_hat_def B_hat hB_hat_def
-        C_hat_cmul rfl C_cmul rfl coeff_cmul rfl
-      -- The goal is the have-chain expression = a * b
-      -- Step 4: Show the have-chain expression equals a.sign * b.sign * recompose l coeff_cmul
-      -- The have chain computes coeff from ssa calls, but hC_hat_eq shows the
-      -- ssa-based C_hat equals C_hat_cmul. So coeff in the goal = coeff_cmul.
-      suffices h_final : a.sign * b.sign * recompose l coeff_cmul = a * b by
-        -- Convert the have-chain goal to use coeff_cmul
-        -- The C_hat in the goal (with ssa) equals C_hat_cmul (with cmul) by hC_hat_eq
-        -- Therefore everything downstream (C, coeff) is the same
-        simp only [hcoeff_cmul_def, hC_cmul_def] at h_final
-        rw [← hC_hat_eq] at h_final
-        exact h_final
-      -- Step 5: Apply algebraic chain
-      exact ssa_algebraic_chain a b nn l K hK_def hnn_ge hl_ge hlK _hN_bound coeff_cmul hconv
+      -- The guarded mul_fn equals plain multiplication on ALL inputs:
+      -- - In the then-branch: ssa u v = u * v by IH
+      -- - In the else-branch: u * v = u * v by definition
+      have h_mul_fn : (fun u v : ℤ =>
+          if u.natAbs + v.natAbs < a.natAbs + b.natAbs then ssa u v else u * v) =
+          fun u v => u * v := by
+        ext u v; split_ifs with h
+        · exact ih' u v (hab ▸ h)
+        · rfl
+      -- Therefore FFT mul_fn = fft and cmul_via mul_fn = cmul
+      simp only [h_mul_fn, FPComplex.FFT_mul_eq_fft, FPComplex.cmul_via_mul]
+      -- Now the pipeline is the standard one; apply pipeline_correct
+      exact pipeline_correct a b hN
     · -- Base case: N ≤ base_threshold, ssa returns a * b directly
       rfl
+
+
+end SSAMain

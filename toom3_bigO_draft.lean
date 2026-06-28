@@ -1,4 +1,4 @@
--- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun>
+-- Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun> and Opus 4.7
 /- add the following to lakefile.toml:
 [[require]]
 name = "mathlib"
