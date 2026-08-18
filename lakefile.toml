@@ -21,4 +21,5 @@ rev = "v4.30.0-rc2"
 
 [[lean_lib]]
 name = "fast_verified_mul"
+globs = ["fast_verified_mul.+"]
 
