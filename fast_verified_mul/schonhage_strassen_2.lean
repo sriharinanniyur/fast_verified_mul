@@ -6,28 +6,6 @@ set_option linter.style.whitespace false
 set_option linter.style.emptyLine false
 open scoped ZMod
 
-lemma vector_set_forIn_range {α : Type*} (K : ℕ) (a₀ : α) (f : Fin K → α) :
-    (Id.run do
-      let mut result := Vector.replicate K a₀
-      for h : i in [0:K] do
-        have hi : i < K := h.2.1
-        result := result.set i (f ⟨i, hi⟩) hi
-      return result) =
-    Vector.ofFn f := by
-  refine' Eq.symm ( _ : _ = _ );
-  induction' K with K ih;
-  · grind +qlia;
-  · simp +decide [ List.range'_concat, ih ];
-    refine' Vector.ext fun i => _;
-    intro hi;
-    by_cases hi' : i < K <;> simp_all +decide [ Vector.getElem_set ];
-    · rw [ if_neg ( ne_of_gt hi' ) ];
-      convert congr_arg ( fun v : Vector α K => v[i] ) ( ih ( fun j => f ⟨ j, Nat.lt_succ_of_lt j.2 ⟩ ) ) using 1;
-      · simp +decide [ Vector.ofFn ];
-      · induction' ( List.range' 0 K ).attach using List.reverseRecOn with x xs ih <;> simp_all +decide [ List.foldl ];
-        grind;
-    · grind
-
 def NTT
     {R : Type*} [CommRing R]
     {K : ℕ} [NeZero K]
@@ -36,38 +14,32 @@ def NTT
     : Fin K → R :=
   fun i => ∑ j : Fin K, x j * OMEGA ^ (j.val * i.val)
 
-private def t_table {R : Type*} [CommRing R] (n : ℕ) (ω : R) : Vector R n := Id.run do
-  let mut T := Vector.replicate n 1
-  let mut acc := (1 : R)
-  for h : j in [0:n] do
-    T := T.set j acc
-    acc := acc * ω
-  T
+def cyclic_shift {n : ℕ} (x : ZMod (2 ^ n + 1)) (s : ℕ) : ZMod (2 ^ n + 1) :=
+  (((x.val <<< (s % (2 * n))) &&& (2 ^ n - 1) : ℕ) : ZMod (2 ^ n + 1)) -
+  (((x.val <<< (s % (2 * n))) >>> n : ℕ) : ZMod (2 ^ n + 1))
 
 def FFT_zmod
     {k : ℕ}
-    {m : ℕ} [NeZero m]
-    (x : Vector (ZMod m) (2^k))
-    (OMEGA : ZMod m)
-    : Vector (ZMod m) (2^k) :=
+    {n : ℕ}
+    (x : Vector (ZMod (2^n + 1)) (2^k))
+    (s : ℕ)
+    : Vector (ZMod (2^n + 1)) (2^k) :=
   match k with
   | 0      => x
   | k' + 1 => Id.run do
     let K_pred : ℕ := 2 ^ k'
     let K  : ℕ := 2 ^ (k' + 1)
-    let OMEGA_sq := OMEGA^2
-    let E : Vector (ZMod m) K_pred := Vector.ofFn fun j : Fin K_pred => x[2 * j.val]
-    let O : Vector (ZMod m) K_pred := Vector.ofFn fun j : Fin K_pred => x[2 * j.val + 1]
+    let E : Vector (ZMod (2^n + 1)) K_pred := Vector.ofFn fun j : Fin K_pred => x[2 * j.val]
+    let O : Vector (ZMod (2^n + 1)) K_pred := Vector.ofFn fun j : Fin K_pred => x[2 * j.val + 1]
 
-    let E' := FFT_zmod E OMEGA_sq
-    let O' := FFT_zmod O OMEGA_sq
-    let T  : Vector (ZMod m) K_pred := t_table K_pred OMEGA
+    let E' := FFT_zmod E (2 * s)
+    let O' := FFT_zmod O (2 * s)
 
-    let mut result := Vector.replicate K (0 : (ZMod m))
+    let mut result := Vector.replicate K (0 : ZMod (2^n + 1))
     for h : j in [0:K_pred] do
       have hj : j < K_pred := h.2.1
       let p := E'[j]
-      let q:= T[j] * O'[j]
+      let q := cyclic_shift O'[j] (s * j)
       result := result.set j           (p + q) (by omega)
       result := result.set (j + K_pred)    (p - q) (by omega)
     return result
@@ -138,9 +110,9 @@ noncomputable def ssa2_multiply
     have h_good_n' : good_n n' := by grind
 
     let THETA : ZMod (2^n' + 1) := 2 ^ (n' / K)
-    let OMEGA : ZMod (2^n' + 1) := THETA ^ 2
+    let OMEGA_shift : ℕ := 2 * (n' / K)
+    let OMEGA_inv_shift : ℕ := 2 * n' - OMEGA_shift
     let THETA_inv : ZMod (2^n' + 1) := THETA.inv
-    let OMEGA_inv : ZMod (2^n' + 1) := OMEGA.inv
     let K_inv : ZMod (2^n' + 1) := (K : ZMod (2^n' + 1)).inv
 
     let A := decompose a BETA K
@@ -151,14 +123,14 @@ noncomputable def ssa2_multiply
     let B' := Vector.ofFn (fun j => (((B j) * (THETA ^ j.val))
                         : ZMod (2^n' + 1)))
 
-    let A'_hat := FFT_zmod A' OMEGA
-    let B'_hat := FFT_zmod B' OMEGA
+    let A'_hat := FFT_zmod A' OMEGA_shift
+    let B'_hat := FFT_zmod B' OMEGA_shift
 
     let C'_hat := Vector.ofFn (fun j => (ssa2_multiply
                             n' h_good_n'
                             (A'_hat[j]) (B'_hat[j])))
 
-    let C' := FFT_zmod C'_hat OMEGA_inv
+    let C' := FFT_zmod C'_hat OMEGA_inv_shift
     let C_unsigned := fun j =>
       (C'[j]) * K_inv * THETA_inv ^ j.val
 
@@ -173,6 +145,88 @@ decreasing_by
 
 -- END SPECIFICATION
 -- BEGIN CORRECTNESS PROOF
+
+lemma vector_set_forIn_range {α : Type*} (K : ℕ) (a₀ : α) (f : Fin K → α) :
+    (Id.run do
+      let mut result := Vector.replicate K a₀
+      for h : i in [0:K] do
+        have hi : i < K := h.2.1
+        result := result.set i (f ⟨i, hi⟩) hi
+      return result) =
+    Vector.ofFn f := by
+  refine' Eq.symm ( _ : _ = _ );
+  induction' K with K ih;
+  · grind +qlia;
+  · simp +decide [ List.range'_concat, ih ];
+    refine' Vector.ext fun i => _;
+    intro hi;
+    by_cases hi' : i < K <;> simp_all +decide [ Vector.getElem_set ];
+    · rw [ if_neg ( ne_of_gt hi' ) ];
+      convert congr_arg ( fun v : Vector α K => v[i] ) ( ih ( fun j => f ⟨ j, Nat.lt_succ_of_lt j.2 ⟩ ) ) using 1;
+      · simp +decide [ Vector.ofFn ];
+      · induction' ( List.range' 0 K ).attach using List.reverseRecOn with x xs ih <;> simp_all +decide [ List.foldl ];
+        grind;
+    · grind
+
+private def t_table {R : Type*} [CommRing R] (n : ℕ) (ω : R) : Vector R n := Id.run do
+  let mut T := Vector.replicate n 1
+  let mut acc := (1 : R)
+  for h : j in [0:n] do
+    T := T.set j acc
+    acc := acc * ω
+  T
+
+def FFT_zmod_mul
+    {k : ℕ}
+    {m : ℕ} [NeZero m]
+    (x : Vector (ZMod m) (2^k))
+    (OMEGA : ZMod m)
+    : Vector (ZMod m) (2^k) :=
+  match k with
+  | 0      => x
+  | k' + 1 => Id.run do
+    let K_pred : ℕ := 2 ^ k'
+    let K  : ℕ := 2 ^ (k' + 1)
+    let OMEGA_sq := OMEGA^2
+    let E : Vector (ZMod m) K_pred := Vector.ofFn fun j : Fin K_pred => x[2 * j.val]
+    let O : Vector (ZMod m) K_pred := Vector.ofFn fun j : Fin K_pred => x[2 * j.val + 1]
+
+    let E' := FFT_zmod_mul E OMEGA_sq
+    let O' := FFT_zmod_mul O OMEGA_sq
+    let T  : Vector (ZMod m) K_pred := t_table K_pred OMEGA
+
+    let mut result := Vector.replicate K (0 : (ZMod m))
+    for h : j in [0:K_pred] do
+      have hj : j < K_pred := h.2.1
+      let p := E'[j]
+      let q:= T[j] * O'[j]
+      result := result.set j           (p + q) (by omega)
+      result := result.set (j + K_pred)    (p - q) (by omega)
+    return result
+
+lemma two_pow_eq_neg_one_zmod (n : ℕ) : (2 ^ n : ZMod (2 ^ n + 1)) = -1 := by
+  apply eq_neg_of_add_eq_zero_left
+  exact_mod_cast ZMod.natCast_self (2 ^ n + 1)
+
+lemma two_pow_mod_two_mul (n s : ℕ) :
+    (2 : ZMod (2 ^ n + 1)) ^ (s % (2 * n)) = 2 ^ s := by
+  conv_rhs => rw [← Nat.mod_add_div s (2 * n)]
+  rw [pow_add, pow_mul, pow_mul', two_pow_eq_neg_one_zmod, neg_one_sq, one_pow, mul_one]
+
+lemma cyclic_shift_eq_mul {n : ℕ} (x : ZMod (2 ^ n + 1)) (s : ℕ) :
+    cyclic_shift x s = x * 2 ^ s := by
+  unfold cyclic_shift
+  rw [Nat.shiftLeft_eq, Nat.shiftRight_eq_div_pow, Nat.and_two_pow_sub_one_eq_mod,
+    ← two_pow_mod_two_mul n s]
+  set v : ℕ := x.val * 2 ^ (s % (2 * n)) with hv
+  have hsplit : v = v % 2 ^ n + 2 ^ n * (v / 2 ^ n) := (Nat.mod_add_div v (2 ^ n)).symm
+  have hcast : ((v : ℕ) : ZMod (2 ^ n + 1)) = x * 2 ^ (s % (2 * n)) := by
+    rw [hv, Nat.cast_mul, Nat.cast_pow, Nat.cast_ofNat, ZMod.natCast_zmod_val]
+  rw [← hcast]
+  conv_rhs => rw [hsplit]
+  push_cast
+  rw [two_pow_eq_neg_one_zmod]
+  ring
 
 lemma sum_fin_pow_succ_split {R : Type*} [AddCommMonoid R] {k : ℕ}
     (f : Fin (2 ^ (k + 1)) → R) :
@@ -326,15 +380,24 @@ lemma t_table_eq {R : Type*} [CommRing R] (n : ℕ) (ω : R) :
       all_goals generalize_proofs at *;
       · induction' ( List.range' 0 n ).attach using List.reverseRecOn with l ih <;> simp +decide [ * ];
       · simp +decide
+
+lemma FFT_zmod_eq_mul {k n : ℕ} (x : Vector (ZMod (2 ^ n + 1)) (2 ^ k)) (s : ℕ) :
+    FFT_zmod x s = FFT_zmod_mul x (2 ^ s) := by
+  induction k generalizing s with
+  | zero => rfl
+  | succ k' ih =>
+    unfold FFT_zmod FFT_zmod_mul
+    simp only [ih, t_table_eq, Vector.getElem_ofFn, cyclic_shift_eq_mul, ← pow_mul, mul_comm]
+
 /-
-FFT_zmod computes the NTT when OMEGA is a primitive 2^k-th root of unity,
+FFT_zmod_mul computes the NTT when OMEGA is a primitive 2^k-th root of unity,
     i.e., when OMEGA^(2^(k-1)) = -1 (for k ≥ 1).
 -/
 set_option maxHeartbeats 800000 in
-lemma FFT_zmod_base {m : ℕ} [NeZero m]
+lemma FFT_zmod_mul_base {m : ℕ} [NeZero m]
     (x : Vector (ZMod m) (2^0)) (OMEGA : ZMod m) :
-    FFT_zmod x OMEGA = Vector.ofFn (NTT x.get OMEGA) := by
-  unfold FFT_zmod NTT;
+    FFT_zmod_mul x OMEGA = Vector.ofFn (NTT x.get OMEGA) := by
+  unfold FFT_zmod_mul NTT;
   ext i;
   interval_cases i ; aesop
 /-
@@ -352,15 +415,15 @@ lemma NTT_butterfly_get {k' : ℕ} {m : ℕ} [NeZero m]
     NTT (fun t : Fin H => x[2 * t.val + 1]) (OMEGA ^ 2) ⟨j, Nat.mod_lt _ (by positivity)⟩ := by
   convert NTT_butterfly x.get OMEGA hOMEGA i using 1
 set_option maxHeartbeats 3200000 in
-lemma FFT_zmod_step {k' : ℕ} {m : ℕ} [NeZero m]
+lemma FFT_zmod_mul_step {k' : ℕ} {m : ℕ} [NeZero m]
     (x : Vector (ZMod m) (2^(k'+1))) (OMEGA : ZMod m)
     (hOMEGA : OMEGA ^ (2 ^ k') = -1)
-    (ih_even : FFT_zmod (Vector.ofFn fun j : Fin (2 ^ k') => x[2 * j.val]) (OMEGA ^ 2) =
+    (ih_even : FFT_zmod_mul (Vector.ofFn fun j : Fin (2 ^ k') => x[2 * j.val]) (OMEGA ^ 2) =
                Vector.ofFn (NTT (Vector.ofFn fun j : Fin (2 ^ k') => x[2 * j.val]).get (OMEGA ^ 2)))
-    (ih_odd  : FFT_zmod (Vector.ofFn fun j : Fin (2 ^ k') => x[2 * j.val + 1]) (OMEGA ^ 2) =
+    (ih_odd  : FFT_zmod_mul (Vector.ofFn fun j : Fin (2 ^ k') => x[2 * j.val + 1]) (OMEGA ^ 2) =
                Vector.ofFn (NTT (Vector.ofFn fun j : Fin (2 ^ k') => x[2 * j.val + 1]).get (OMEGA ^ 2)))
-    : FFT_zmod x OMEGA = Vector.ofFn (NTT x.get OMEGA) := by
-  unfold FFT_zmod;
+    : FFT_zmod_mul x OMEGA = Vector.ofFn (NTT x.get OMEGA) := by
+  unfold FFT_zmod_mul;
   apply Vector.ext;
   intro i hi; simp +decide [ *, NTT_butterfly_get ] ;
   convert congr_arg ( fun v : Vector ( ZMod m ) ( 2 * 2 ^ k' ) => v[i] ) ( butterfly_loop_eq ( 2 ^ k' ) 0 ( fun j => NTT ( Vector.ofFn fun j : Fin ( 2 ^ k' ) => x[2 * j.val] ).get ( OMEGA ^ 2 ) j + ( t_table ( 2 ^ k' ) OMEGA)[j] * NTT ( Vector.ofFn fun j : Fin ( 2 ^ k' ) => x[2 * j.val + 1] ).get ( OMEGA ^ 2 ) j ) ( fun j => NTT ( Vector.ofFn fun j : Fin ( 2 ^ k' ) => x[2 * j.val] ).get ( OMEGA ^ 2 ) j - ( t_table ( 2 ^ k' ) OMEGA)[j] * NTT ( Vector.ofFn fun j : Fin ( 2 ^ k' ) => x[2 * j.val + 1] ).get ( OMEGA ^ 2 ) j ) ) using 1;
@@ -380,13 +443,13 @@ lemma FFT_zmod_step {k' : ℕ} {m : ℕ} [NeZero m]
     · rw [ Nat.mod_eq_sub_mod ( by linarith ) ];
       rw [ Nat.mod_eq_of_lt ( by rw [ tsub_lt_iff_left ] <;> linarith [ pow_succ' 2 k' ] ) ]
 set_option maxHeartbeats 1600000 in
-theorem FFT_zmod_eq_NTT
+theorem FFT_zmod_mul_eq_NTT
     {k : ℕ} {m : ℕ} [NeZero m]
     (x : Vector (ZMod m) (2^k)) (OMEGA : ZMod m)
     (hOMEGA : k ≥ 1 → OMEGA ^ (2 ^ (k - 1)) = -1)
-    : FFT_zmod x OMEGA = Vector.ofFn (NTT x.get OMEGA) := by
+    : FFT_zmod_mul x OMEGA = Vector.ofFn (NTT x.get OMEGA) := by
   induction k generalizing OMEGA with
-  | zero => exact FFT_zmod_base x OMEGA
+  | zero => exact FFT_zmod_mul_base x OMEGA
   | succ k' ih =>
     have hO := hOMEGA (by omega)
     simp only [Nat.succ_sub_one] at hO
@@ -395,9 +458,18 @@ theorem FFT_zmod_eq_NTT
       rw [← pow_mul, show 2 * 2 ^ (k' - 1) = 2 ^ k' from by
         cases k' with | zero => omega | succ n => simp [pow_succ]; ring]
       exact hO
-    exact FFT_zmod_step x OMEGA hO
+    exact FFT_zmod_mul_step x OMEGA hO
       (ih (Vector.ofFn fun j : Fin (2 ^ k') => x[2 * j.val]) (OMEGA ^ 2) ih_hyp)
       (ih (Vector.ofFn fun j : Fin (2 ^ k') => x[2 * j.val + 1]) (OMEGA ^ 2) ih_hyp)
+
+theorem FFT_zmod_eq_NTT
+    {k n : ℕ}
+    (x : Vector (ZMod (2 ^ n + 1)) (2^k)) (s : ℕ)
+    (hOMEGA : k ≥ 1 → (2 ^ s : ZMod (2 ^ n + 1)) ^ (2 ^ (k - 1)) = -1)
+    : FFT_zmod x s = Vector.ofFn (NTT x.get (2 ^ s)) := by
+  rw [FFT_zmod_eq_mul]
+  exact FFT_zmod_mul_eq_NTT x (2 ^ s) hOMEGA
+
 set_option maxHeartbeats 4000000 in
 set_option grind.warning false in
 /-! ## Helper definitions and lemmas for the correctness proof -/
@@ -742,43 +814,71 @@ lemma pipeline_eq_negacyclic
     {k : ℕ} {m : ℕ} [NeZero m]
     (hk : k ≥ 2)
     (A B : Fin (2^k) → ZMod m)
-    (THETA : ZMod m)
+    (THETA OMEGA_inv : ZMod m)
     (hθ_K : THETA ^ (2^k) = -1)
     (hθ_inv : THETA * (ZMod.inv m THETA) = 1)
-    (hω_inv : THETA^2 * (ZMod.inv m (THETA^2)) = 1)
+    (hω_inv : THETA^2 * OMEGA_inv = 1)
     (hK_inv : (↑(2^k) : ZMod m) * (ZMod.inv m (↑(2^k))) = 1)
     (l : Fin (2^k)) :
     let OMEGA := THETA^2
-    let OMEGA_inv := ZMod.inv m OMEGA
     let THETA_inv := ZMod.inv m THETA
     let K_inv := ZMod.inv m (↑(2^k))
     let A' := Vector.ofFn (fun j : Fin (2^k) => A j * THETA ^ j.val)
     let B' := Vector.ofFn (fun j : Fin (2^k) => B j * THETA ^ j.val)
-    let A'_hat := FFT_zmod A' OMEGA
-    let B'_hat := FFT_zmod B' OMEGA
+    let A'_hat := FFT_zmod_mul A' OMEGA
+    let B'_hat := FFT_zmod_mul B' OMEGA
     let C'_hat := Vector.ofFn (fun j => A'_hat[j] * B'_hat[j])
-    let C' := FFT_zmod C'_hat OMEGA_inv
+    let C' := FFT_zmod_mul C'_hat OMEGA_inv
     C'[l] * K_inv * THETA_inv ^ l.val =
     negacyclic_conv_ssa A B l := by
-  have h_apply_double : NTT (NTT (fun j => A j * THETA ^ j.val) (THETA ^ 2) * NTT (fun j => B j * THETA ^ j.val) (THETA ^ 2)) (ZMod.inv m (THETA ^ 2)) l = (2 ^ k : ℕ) * cyclic_conv_ssa (fun j => A j * THETA ^ j.val) (fun j => B j * THETA ^ j.val) l := by
-    convert ntt_double_apply_ssa ( show k ≥ 1 by linarith ) ( THETA ^ 2 ) ( ZMod.inv m ( THETA ^ 2 ) ) _ _ _ l using 1;
+  have h_apply_double : NTT (NTT (fun j => A j * THETA ^ j.val) (THETA ^ 2) * NTT (fun j => B j * THETA ^ j.val) (THETA ^ 2)) OMEGA_inv l = (2 ^ k : ℕ) * cyclic_conv_ssa (fun j => A j * THETA ^ j.val) (fun j => B j * THETA ^ j.val) l := by
+    convert ntt_double_apply_ssa ( show k ≥ 1 by linarith ) ( THETA ^ 2 ) OMEGA_inv _ _ _ l using 1;
     · congr! 2;
       ext i; exact ntt_pointwise_eq_ntt_conv_ssa _ ( show ( THETA ^ 2 ) ^ 2 ^ k = 1 from by linear_combination' hθ_K * hθ_K ) _ _ _;
     · exact hω_inv;
     · cases k <;> simp_all +decide [ pow_succ', pow_mul ];
   convert congr_arg ( fun x : ZMod m => x * ZMod.inv m ( 2 ^ k ) * ZMod.inv m THETA ^ ( l : ℕ ) ) h_apply_double using 1;
   · congr! 2;
-    convert congr_arg ( fun x : Vector ( ZMod m ) ( 2 ^ k ) => x[l] ) ( FFT_zmod_eq_NTT _ _ _ ) using 1;
-    · have := FFT_zmod_eq_NTT ( Vector.ofFn fun j : Fin ( 2 ^ k ) => A j * THETA ^ ( j : ℕ ) ) ( THETA ^ 2 ) ?_ <;> simp_all +decide [ NTT ];
-      · have := FFT_zmod_eq_NTT ( Vector.ofFn fun j : Fin ( 2 ^ k ) => B j * THETA ^ ( j : ℕ ) ) ( THETA ^ 2 ) ?_ <;> simp_all +decide [ NTT ];
+    convert congr_arg ( fun x : Vector ( ZMod m ) ( 2 ^ k ) => x[l] ) ( FFT_zmod_mul_eq_NTT _ _ _ ) using 1;
+    · have := FFT_zmod_mul_eq_NTT ( Vector.ofFn fun j : Fin ( 2 ^ k ) => A j * THETA ^ ( j : ℕ ) ) ( THETA ^ 2 ) ?_ <;> simp_all +decide [ NTT ];
+      · have := FFT_zmod_mul_eq_NTT ( Vector.ofFn fun j : Fin ( 2 ^ k ) => B j * THETA ^ ( j : ℕ ) ) ( THETA ^ 2 ) ?_ <;> simp_all +decide [ NTT ];
         rcases k with ( _ | _ | k ) <;> simp_all +decide [ pow_succ', pow_mul ];
       · cases k <;> simp_all +decide [ pow_succ', pow_mul ];
-    · have h_inv_pow : (THETA ^ 2) ^ (2 ^ (k - 1)) * (ZMod.inv m (THETA ^ 2)) ^ (2 ^ (k - 1)) = 1 := by
+    · have h_inv_pow : (THETA ^ 2) ^ (2 ^ (k - 1)) * OMEGA_inv ^ (2 ^ (k - 1)) = 1 := by
         rw [ ← mul_pow, hω_inv, one_pow ];
       rcases k with ( _ | _ | k ) <;> simp_all +decide [ pow_succ', pow_mul ];
       exact neg_eq_iff_eq_neg.mp h_inv_pow;
   · have := weighted_cyclic_eq_negacyclic_ssa A B THETA ( ZMod.inv m THETA ) ?_ ?_ l <;> simp_all +decide [ mul_assoc, mul_comm, mul_left_comm ];
     grind +splitIndPred
+
+lemma pipeline_eq_negacyclic_shift
+    {k n' : ℕ}
+    (hk : k ≥ 2)
+    (A B : Fin (2^k) → ZMod (2 ^ n' + 1))
+    (t : ℕ)
+    (hθ_K : (2 ^ t : ZMod (2 ^ n' + 1)) ^ (2^k) = -1)
+    (hθ_inv : (2 ^ t : ZMod (2 ^ n' + 1)) * (ZMod.inv (2 ^ n' + 1) (2 ^ t)) = 1)
+    (u : ℕ)
+    (hω_inv : (2 ^ t : ZMod (2 ^ n' + 1)) ^ 2 * 2 ^ u = 1)
+    (hK_inv : ((2^k : ℕ) : ZMod (2 ^ n' + 1)) * (ZMod.inv (2 ^ n' + 1) ((2^k : ℕ) : ZMod (2 ^ n' + 1))) = 1)
+    (l : Fin (2^k)) :
+    let THETA : ZMod (2 ^ n' + 1) := 2 ^ t
+    let THETA_inv := ZMod.inv (2 ^ n' + 1) THETA
+    let K_inv := ZMod.inv (2 ^ n' + 1) ((2^k : ℕ) : ZMod (2 ^ n' + 1))
+    let A' := Vector.ofFn (fun j : Fin (2^k) => A j * THETA ^ j.val)
+    let B' := Vector.ofFn (fun j : Fin (2^k) => B j * THETA ^ j.val)
+    let A'_hat := FFT_zmod A' (2 * t)
+    let B'_hat := FFT_zmod B' (2 * t)
+    let C'_hat := Vector.ofFn (fun j => A'_hat[j] * B'_hat[j])
+    let C' := FFT_zmod C'_hat u
+    C'[l] * K_inv * THETA_inv ^ l.val =
+    negacyclic_conv_ssa A B l := by
+  have hK_inv' : (2 ^ k : ZMod (2 ^ n' + 1)) * ZMod.inv (2 ^ n' + 1) (2 ^ k) = 1 := by
+    exact_mod_cast hK_inv
+  have h := pipeline_eq_negacyclic hk A B (2 ^ t) (2 ^ u) hθ_K hθ_inv hω_inv hK_inv' l
+  simp only [FFT_zmod_eq_mul, pow_mul', Nat.cast_pow, Nat.cast_ofNat]
+  exact h
+
 /-
 Coprimality of powers of 2 with 2^n'+1
 -/
@@ -817,37 +917,23 @@ theorem ssa2_multiply_correct
           omega;
         simp +decide [ ZMod.inv ];
         exact Iff.symm (imp_iff_right h_coprime);
-      have hω_inv : (2 ^ (Classical.choose (exists_suitable_n' n hn h_small) / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) : ZMod (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1)) ^ 2 * (ZMod.inv (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1) ((2 ^ (Classical.choose (exists_suitable_n' n hn h_small) / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) : ZMod (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1)) ^ 2)) = 1 := by
-        convert ZMod.coe_mul_inv_eq_one _ using 1;
-        rotate_left;
-        exact 2 ^ Classical.choose ( exists_suitable_n' n hn h_small ) + 1;
-        exact ( 2 ^ ( Classical.choose ( exists_suitable_n' n hn h_small ) / 2 ^ ( Nat.min ( Classical.choose hn ) ( Nat.log 2 n - 1 ) ) ) ) ^ 2;
-        simp +decide [ ZMod.coe_mul_inv_eq_one ];
-        constructor <;> intro h;
-        · finiteness;
-        · convert h _ using 1;
-          convert two_pow_coprime_two_pow_succ _ _ _ using 1;
-          omega;
-      have hK_inv : (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)) : ZMod (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1)) * (ZMod.inv (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1) (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)))) = 1 := by
-        convert ZMod.coe_mul_inv_eq_one _ _ using 1;
-        rotate_left;
-        exact 2 ^ ( Nat.min ( Classical.choose hn ) ( Nat.log 2 n - 1 ) );
-        · apply two_pow_coprime_two_pow_succ;
-          omega;
-        · push_cast; rfl;
-      have h_pipeline : ∀ l : Fin (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))), (let k := Nat.min (Classical.choose hn) (Nat.log 2 n - 1); let K := 2 ^ k; let M := n / K; let n' := Classical.choose (exists_suitable_n' n hn h_small); let THETA := 2 ^ (n' / K); let OMEGA := THETA ^ 2; let THETA_inv := ZMod.inv (2 ^ n' + 1) THETA; let OMEGA_inv := ZMod.inv (2 ^ n' + 1) OMEGA; let K_inv := ZMod.inv (2 ^ n' + 1) K; let A := decompose a (2 ^ M) K; let B := decompose b (2 ^ M) K; let A' := Vector.ofFn (fun j : Fin K => (A j : ZMod (2 ^ n' + 1)) * THETA ^ j.val); let B' := Vector.ofFn (fun j : Fin K => (B j : ZMod (2 ^ n' + 1)) * THETA ^ j.val); let A'_hat := FFT_zmod A' OMEGA; let B'_hat := FFT_zmod B' OMEGA; let C'_hat := Vector.ofFn (fun j => ssa2_multiply n' (Classical.choose_spec (exists_suitable_n' n hn h_small)).2.2.1 A'_hat[j] B'_hat[j]); let C' := FFT_zmod C'_hat OMEGA_inv; C'[l] * K_inv * THETA_inv ^ l.val = negacyclic_conv_ssa (fun j => (A j : ZMod (2 ^ n' + 1))) (fun j => (B j : ZMod (2 ^ n' + 1))) l) := by
-        convert pipeline_eq_negacyclic hk_ge_2 _ _ _ _ _ _ _ using 1;
-        rotate_left;
-        exact 2 ^ Classical.choose ( exists_suitable_n' n hn h_small ) + 1;
-        exact ⟨ by positivity ⟩;
-        exact fun j => ( decompose a ( 2 ^ ( n / 2 ^ ( Nat.min ( Classical.choose hn ) ( Nat.log 2 n - 1 ) ) ) ) ( 2 ^ ( Nat.min ( Classical.choose hn ) ( Nat.log 2 n - 1 ) ) ) j : ZMod ( 2 ^ Classical.choose ( exists_suitable_n' n hn h_small ) + 1 ) );
-        exact fun j => ( decompose b ( 2 ^ ( n / 2 ^ ( Nat.min ( Classical.choose hn ) ( Nat.log 2 n - 1 ) ) ) ) ( 2 ^ ( Nat.min ( Classical.choose hn ) ( Nat.log 2 n - 1 ) ) ) j : ZMod ( 2 ^ Classical.choose ( exists_suitable_n' n hn h_small ) + 1 ) );
-        exact 2 ^ ( Classical.choose ( exists_suitable_n' n hn h_small ) / 2 ^ ( Nat.min ( Classical.choose hn ) ( Nat.log 2 n - 1 ) ) );
-        · convert hθ_K using 1;
-        · convert hθ_inv using 1;
-        · convert hω_inv using 1;
-        · convert hK_inv using 1;
-        · simp +decide [ ih _ this.2.1 ];
+      have hω_inv : ((2 : ZMod (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1)) ^ (Classical.choose (exists_suitable_n' n hn h_small) / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)))) ^ 2 * 2 ^ (2 * Classical.choose (exists_suitable_n' n hn h_small) - 2 * (Classical.choose (exists_suitable_n' n hn h_small) / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)))) = 1 := by
+        have hle := Nat.div_le_self (Classical.choose (exists_suitable_n' n hn h_small)) (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)))
+        rw [← pow_mul, ← pow_add,
+          show Classical.choose (exists_suitable_n' n hn h_small) / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)) * 2 + (2 * Classical.choose (exists_suitable_n' n hn h_small) - 2 * (Classical.choose (exists_suitable_n' n hn h_small) / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)))) = Classical.choose (exists_suitable_n' n hn h_small) * 2 by omega,
+          pow_mul, ZMod_two_pow_eq_neg_one_ssa (Classical.choose (exists_suitable_n' n hn h_small)) (by omega), neg_one_sq]
+      have hK_inv : ((2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)) : ℕ) : ZMod (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1)) * (ZMod.inv (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1) ((2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)) : ℕ) : ZMod (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1))) = 1 := by
+        exact ZMod.coe_mul_inv_eq_one _ (two_pow_coprime_two_pow_succ _ _ (by omega))
+      have h_pipeline : ∀ l : Fin (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))), (let k := Nat.min (Classical.choose hn) (Nat.log 2 n - 1); let K := 2 ^ k; let M := n / K; let n' := Classical.choose (exists_suitable_n' n hn h_small); let THETA : ZMod (2 ^ n' + 1) := 2 ^ (n' / K); let OMEGA_shift : ℕ := 2 * (n' / K); let OMEGA_inv_shift : ℕ := 2 * n' - OMEGA_shift; let THETA_inv := ZMod.inv (2 ^ n' + 1) THETA; let K_inv := ZMod.inv (2 ^ n' + 1) K; let A := decompose a (2 ^ M) K; let B := decompose b (2 ^ M) K; let A' := Vector.ofFn (fun j : Fin K => (A j : ZMod (2 ^ n' + 1)) * THETA ^ j.val); let B' := Vector.ofFn (fun j : Fin K => (B j : ZMod (2 ^ n' + 1)) * THETA ^ j.val); let A'_hat := FFT_zmod A' OMEGA_shift; let B'_hat := FFT_zmod B' OMEGA_shift; let C'_hat := Vector.ofFn (fun j => ssa2_multiply n' (Classical.choose_spec (exists_suitable_n' n hn h_small)).2.2.1 A'_hat[j] B'_hat[j]); let C' := FFT_zmod C'_hat OMEGA_inv_shift; C'[l] * K_inv * THETA_inv ^ l.val = negacyclic_conv_ssa (fun j => (A j : ZMod (2 ^ n' + 1))) (fun j => (B j : ZMod (2 ^ n' + 1))) l) := by
+        intro l
+        have hp := pipeline_eq_negacyclic_shift hk_ge_2
+          (fun j => (decompose a (2 ^ (n / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)))) (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) j : ZMod (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1)))
+          (fun j => (decompose b (2 ^ (n / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)))) (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) j : ZMod (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1)))
+          (Classical.choose (exists_suitable_n' n hn h_small) / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)))
+          hθ_K hθ_inv
+          (2 * Classical.choose (exists_suitable_n' n hn h_small) - 2 * (Classical.choose (exists_suitable_n' n hn h_small) / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))))
+          hω_inv hK_inv l
+        simpa only [ih _ this.2.1] using hp
       have h_recover_sign : ∀ l : Fin (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))), recover_sign (negacyclic_conv_ssa (fun j => (decompose a (2 ^ (n / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) ) (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) j : ZMod (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1))) (fun j => (decompose b (2 ^ (n / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) ) (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) j : ZMod (2 ^ Classical.choose (exists_suitable_n' n hn h_small) + 1))) l) ((l.val + 1) * (2 ^ (n / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1)))) ^ 2) = negacyclic_conv_int (decompose a (2 ^ (n / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) ) (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) ) (decompose b (2 ^ (n / 2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) ) (2 ^ (Nat.min (Classical.choose hn) (Nat.log 2 n - 1))) ) l := by
         apply_rules [ recover_sign_eq_negacyclic_int ];
         ext l;
